@@ -17,6 +17,7 @@ const short = (p) => `${p.windings}W: ` + p.title.replace(/^.*?: /, "");
 function pairExplanation(row) {
   const tc = presets.find((p) => p.row === row && !p.noload);
   const nl = presets.find((p) => p.row === row && p.noload);
+  // explain one preset: build its model, solve it with control, explain the result
   const ex = (p) => { const m = presetModel(p, defaultModel); return explain(m, solveWithControl(m), presets, defaultModel); };
   const a = ex(tc), b = ex(nl);
   const sections = [];
@@ -51,6 +52,7 @@ writeFileSync(new URL("./EXPLANATIONS.md", import.meta.url), md.replace(/\n{3,}/
 
 // ---------------------------------------------------------------- HTML
 const css = readFileSync(new URL("./index.html", import.meta.url), "utf8").match(/<style>([\s\S]*?)<\/style>/)[1];
+/** Escape text for HTML (&, <, >). */
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tap changer combinations explained</title>
 <style>${css}
