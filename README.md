@@ -45,3 +45,7 @@ Files:
   pair table with the stored results, checks the physics the text states (no-load voltage = V_B1 · t_k / t_1, a pure
   phase shift moves active power in the direction of its angle, a pure ratio change mainly reactive power) and
   explains 2,000 random combinations.
+
+## License
+
+MIT, see [LICENSE](LICENSE): you may use, change and share the simulator, also commercially, as long as the copyright and licence notice stays with them.
