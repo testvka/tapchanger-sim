@@ -13,6 +13,8 @@ tap changer the active power into TX. The controller moves one step per round un
 setpoint ± deadband/2; it stops at a step limit, when it starts to oscillate between two steps, or when a step has no
 effect.
 
+Under each tap-changer menu a short note says what the chosen class does, with its formula (n = step − neutral).
+
 Below the diagram, the page explains the current combination of tap changers in words, with the numbers of the
 current load flow: what each tap changer does at its step and on its end, how the tap changers combine (the effective
 ratio t_k / t_1 between B1 and each other bus), what the network makes of it (with load and the parallel TP: the

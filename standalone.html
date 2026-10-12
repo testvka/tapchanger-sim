@@ -24,7 +24,7 @@ input[type=range]:disabled{opacity:.5}
 .seg{display:flex;flex-wrap:wrap;gap:6px}
 .seg button{font:inherit;font-size:.9rem;color:#111;background:#fff;border:1px solid #bbb;border-radius:2px;padding:3px 10px;cursor:pointer}
 .seg button[aria-pressed="true"]{background:#eee;border-color:#555}
-button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #0b4f9c;outline-offset:1px}
+button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid #0b4f9c;outline-offset:1px}
 .end{padding-left:10px;border-left:2px solid #ddd;display:flex;flex-direction:column;gap:6px}
 .readout{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.8rem;color:#333;overflow-x:auto}
 .chk{flex-direction:row;align-items:center;gap:6px;color:#111;font-size:.9rem}
@@ -35,6 +35,7 @@ td{border-bottom:1px solid #e3e3e3;padding:3px 10px 3px 0;font-variant-numeric:t
 .two{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
 .status{font-size:.9rem;color:#333;margin-bottom:8px} .status.bad{color:#a00}
 .scroll{overflow-x:auto}
+#sld,#phasor{overflow-x:auto} #sld svg,#phasor svg{min-width:600px}
 svg{width:100%;height:auto;display:block;background:#fff}
 svg text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:11px;fill:#111}
 svg .bus{stroke:#111;stroke-width:4} svg .wire,svg .wind{stroke:#111;stroke-width:1.4;fill:none}
@@ -49,6 +50,7 @@ svg .dot{fill:#111} svg .dotw{fill:#fff;stroke:#111;stroke-width:1.2}
 svg .num{font-size:12px;font-weight:600} svg .pl{font-size:11px;font-weight:600}
 svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--net)} svg .tick{stroke:#111;stroke-width:1.6}
 .hint{font-size:.85rem;color:#555}
+.tcdesc{margin:0;font-size:.85rem;color:#555}
 .contrib{padding-left:1.2em} .contrib li{font-size:.85rem}
 .explain h3{margin:.9em 0 .2em} .explain h3:first-child{margin-top:0} .explain p,.explain li{font-size:.9rem}
 .explain table{margin:.3em 0 .5em} .explain .seg{margin-top:.4em}
@@ -59,7 +61,7 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
     <p>Put ratio and phase tap changers on any end of a two- or three-winding transformer, move the steps and see
       the load flow, the single-line diagram and which tap changer causes which part of the voltage change. Same model
       as the 64 CGMES 3.0 test cases (each tap changer is an ideal transformer at its terminal, v_terminal = t · v_internal);
-      the solver reproduces all their SVs to 1e-11 pu. <a href="explanations.html">All 32 combinations explained</a></p>
+      the solver reproduces all their SVs to 1e-11 pu. <a href="explanations.html">All 32 combinations explained</a> CGMES is ENTSO-E's Common Grid Model Exchange Standard, the format in which European grid models are exchanged.</p>
   </header>
   <div class="lay">
     <div class="ctrl">
@@ -71,12 +73,13 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
       <section class="panel"><h2>Tap changers per end</h2>
         <p class="hint">Each end (winding) can carry one ratio tap changer and one phase tap changer, as in CGMES. Move a
           step with its slider, or switch on automatic control: the tap changer then steps until its value is inside the
-          band setpoint ± deadband/2 (deadband = full width, as CGMES targetDeadband), like a real controller.</p>
+          band setpoint ± deadband/2 (deadband = full width, as CGMES targetDeadband), like a real controller. Under each menu a short note says what the class does (n = step − neutral; δu and Δα are the step increments below, δu as a fraction).</p>
         <div id="ends" class="ctrl"></div></section>
       <section class="panel">
         <h2>Network</h2>
-        <label class="chk"><input type="checkbox" id="noload"> No load: transformer alone, other ends open</label>
+        <label class="chk"><input type="checkbox" id="noload"> No load: transformer alone, other ends open; i0 and p0 below get typical values if they are 0</label>
         <label class="chk"><input type="checkbox" id="tp"> Plain transformer TP in parallel (B1–B2)</label>
+        <p class="hint">TP has no tap changer. With TP in parallel a tap step on TX drives power around the loop B1–TX–B2–TP: an angle step mainly moves active power, a ratio step mainly reactive power.</p>
         <div class="row">
           <label>Source B1 kV<input type="number" id="vs" step="0.5"></label>
           <label>Load B2 MW<input type="number" id="p2" step="5"></label>
@@ -88,6 +91,7 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
         </div>
         <label>Linear / tabular phase tap changer on end 2 or 3
           <select id="rule"><option value="keep">own winding (as in ENTSO-E's CGMES 3.0 data)</option><option value="invert">inverted, seen from end 1 (CGMES 2.4.15 conformity-case convention)</option></select></label>
+        <p class="hint">Matters only for a linear or tabular phase tap changer on end 2 or 3: ENTSO-E's CGMES 3.0 data read its angle on its own winding, ENTSO-E's CGMES 2.4.15 conformity cases inverted.</p>
       </section>
       <section class="panel">
         <h2>Transformer data</h2>
@@ -182,7 +186,7 @@ function tapValue(tc, end2Rule = "keep") {
     const c = C(1 + du * Math.cos(rad(tc.theta)), du * Math.sin(rad(tc.theta)));
     ratio = abs(c);
     angle = deg(arg(c));
-    formula = `c = 1 + ${du.toFixed(4)}·e^(j${tc.theta}°) = ${c.re.toFixed(5)} + j${c.im.toFixed(5)}: ratio ${ratio.toFixed(5)}, angle ${angle.toFixed(3)}°`;
+    formula = `t = 1 + ${du.toFixed(4)}·e^(j${tc.theta}°) = ${c.re.toFixed(5)} + j${c.im.toFixed(5)}: ratio ${ratio.toFixed(5)}, angle ${angle.toFixed(3)}°`;
   } else if (tc.type === "PTCtab") {
     const p = tc.table.find((x) => x.step === tc.step) || { angle: 0, ratio: 1 };
     ratio = p.ratio;
@@ -781,10 +785,30 @@ const PHASE = ["PTClin", "PTCsym", "PTCasym", "PTCtab"];
 const slotOf = (t) => (t.type === "RTC" ? "r" : "p");
 const findTap = (e, slot) => model.taps.find((t) => t.end === e && slotOf(t) === slot);
 
+// Short note under each tap-changer menu, with a link to the page that explains the class in detail (a new tab,
+// so the settings here stay). The theory pages sit next to the simulator folder (../pages/); a copy published
+// elsewhere sets THEORY_URL to where they are.
+const THEORY_URL = "";                       // this edition has no theory pages: notes without links
+const TAP_INFO = {
+  noner: ["No ratio tap changer on this end.", "theory-ratio", "What a ratio tap changer does"],
+  nonep: ["No phase tap changer on this end.", "theory-models", "Compare the phase tap changer classes"],
+  RTC: ["Changes the voltage of this winding in equal steps; the angle stays. t = 1 + n·δu.", "theory-ratio"],
+  PTClin: ["Turns the voltage by the same angle per step; the magnitude stays. t = e^(j·n·Δα), a simplified model.", "theory-linear"],
+  PTCsym: ["Adds a voltage at right angles to the mean of input and output: the magnitude stays, angle = 2·atan(n·δu/2).", "theory-symmetrical"],
+  PTCasym: ["Adds n·δu at the fixed angle θ (windingConnectionAngle): magnitude and angle change together, t = 1 + n·δu·e^(jθ).", "theory-asymmetrical"],
+  PTCtab: ["Angle and ratio of each step come from a table, e.g. a real device's test report; nothing is interpolated.", "theory-tabular"],
+};
+function tapInfo(slot, type) {
+  const [text, page, link = "How it works"] = TAP_INFO[type === "none" ? "none" + slot : type];
+  const a = THEORY_URL ? ` <a href="${THEORY_URL.replace("{page}", page)}" target="_blank" rel="noopener">${link} ↗</a>` : "";
+  return `<p class="tcdesc">${text}${a}</p>`;
+}
+
 function slotHtml(e, slot, tc) {
   const opts = slot === "r" ? ["none", "RTC"] : ["none", ...PHASE];
   const sel = opts.map((k) => `<option value="${k}"${(tc ? tc.type : "none") === k ? " selected" : ""}>${k === "none" ? (slot === "r" ? "no ratio tap changer" : "no phase tap changer") : TAP_TYPES[k]}</option>`).join("");
   let h = `<label>${slot === "r" ? "Ratio tap changer" : "Phase tap changer"}<select data-e="${e}" data-s="${slot}" data-f="type">${sel}</select></label>`;
+  h += tapInfo(slot, tc ? tc.type : "none");
   if (!tc) return h;
   const k = `${e}${slot}`;
   const auto = tc.control && tc.control.on;
@@ -926,7 +950,7 @@ function sldSvg(r) {
   out.push(`<line x1="40" y1="${yB2}" x2="${tp ? 580 : 300}" y2="${yB2}" class="bus"/><text x="40" y="${yB2 + 22}" class="bn">B2, 110 kV</text><text x="40" y="${yB2 + 36}" class="bv">${vtxt("B2")}, ${f1(b.B2.angleDeg, 3)}°</text>`);
   if (!model.noLoad) out.push(`<line x1="${ldX}" y1="${yB2}" x2="${ldX}" y2="${yB2 + 36}" class="wire" marker-end="url(#am-ink)"/><text x="580" y="${yB2 + 52}" text-anchor="end" class="lb">LD2 ${model.loads.B2.p} MW / ${model.loads.B2.q} Mvar</text>`);
   else out.push(`<text x="310" y="${yB2 + 4}" class="lb">open (no load)</text>`);
-  return `<svg viewBox="0 0 600 ${H}" role="img" aria-label="Single-line diagram">${out.join("")}</svg>`;
+  return `<svg viewBox="-60 0 660 ${H}" role="img" aria-label="Single-line diagram">${out.join("")}</svg>`;
 }
 
 const CIRC = "12345";
@@ -944,7 +968,7 @@ function phasorSvg(chains) {
   ends.forEach((z) => out.push(`<line x1="${X(o)}" y1="${Y(o)}" x2="${X(z)}" y2="${Y(z)}" class="ray"/>`));
   const seen = new Set(), placed = [];
   chains.forEach((c) => c.steps.forEach((s) => {
-    s.mark = s.no ? CIRC[s.no - 1] + (s.sub || "") : (c.bus === "B2" ? "4" : "5");
+    s.mark = s.no ? CIRC[s.no - 1] + (s.sub || "") : "N";        // number = end of the tap changer, N = network
     const key = [s.a.re, s.a.im, s.b.re, s.b.im].map((v) => v.toFixed(10)).join();
     if (seen.has(key)) return;
     seen.add(key);
@@ -961,7 +985,7 @@ function phasorSvg(chains) {
   const s0 = chains[0].start;
   out.push(`<circle cx="${X(s0)}" cy="${Y(s0)}" r="3.5" class="dotw"/><text x="${X(s0) + 8}" y="${Y(s0) - 8}" class="pl">start: V1 · U_end/U_1 (no taps)</text>`);
   chains.forEach((c) => { const z = c.steps.at(-1).b; out.push(`<circle cx="${X(z)}" cy="${Y(z)}" r="3.5" class="dot"/><text x="${X(z) + 8}" y="${Y(z) + 16}" class="pl">${c.bus}</text>`); });
-  out.push(`</g><text x="8" y="${H + 16}" class="lb">pu of each bus, true angles, zoomed on the tips (1 pu = ${S.toFixed(0)} px)</text><text x="8" y="${H + 30}" class="lb">dashed legs: magnitude part, then angle part</text>`);
+  out.push(`</g><text x="8" y="${H + 16}" class="lb">pu of each bus, true angles, zoomed on the tips</text><text x="8" y="${H + 30}" class="lb">dashed legs: magnitude part, then angle part</text>`);
   return `<svg viewBox="0 0 ${W} ${H + 38}" role="img" aria-label="Phasor chain">${out.join("")}</svg>`;
 }
 

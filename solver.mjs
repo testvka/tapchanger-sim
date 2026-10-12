@@ -74,7 +74,7 @@ export function tapValue(tc, end2Rule = "keep") {
     const c = C(1 + du * Math.cos(rad(tc.theta)), du * Math.sin(rad(tc.theta)));
     ratio = abs(c);
     angle = deg(arg(c));
-    formula = `c = 1 + ${du.toFixed(4)}·e^(j${tc.theta}°) = ${c.re.toFixed(5)} + j${c.im.toFixed(5)}: ratio ${ratio.toFixed(5)}, angle ${angle.toFixed(3)}°`;
+    formula = `t = 1 + ${du.toFixed(4)}·e^(j${tc.theta}°) = ${c.re.toFixed(5)} + j${c.im.toFixed(5)}: ratio ${ratio.toFixed(5)}, angle ${angle.toFixed(3)}°`;
   } else if (tc.type === "PTCtab") {
     const p = tc.table.find((x) => x.step === tc.step) || { angle: 0, ratio: 1 };
     ratio = p.ratio;
