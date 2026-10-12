@@ -104,6 +104,16 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
   </div>
 </div>
 <script type="module">
+// Page script of the simulator. Where it sits: index.html loads it as a JavaScript module; it imports the load flow
+// from solver.mjs and the text explanation from explain.mjs. bundle step: standalone.html is this page with
+// the modules pasted in (bundle.py). Main steps: fetch presets.json -> openPreset() -> setModel() draws the input
+// controls (renderEnds, renderTxData, syncNetwork) -> run() solves the model and fills the result panels
+// (single-line diagram, phasor chain, waterfall, tables, explanation). Every input change calls run() again.
+// Read first: run(), onEnd(), setModel(), sldSvg().
+// Words: RTC = ratio tap changer, PTC = phase tap changer (lin / sym / asym / tab = Linear / Symmetrical /
+// Asymmetrical / Tabular), TX = transformer under test, TP = plain parallel transformer, B1/B2/B3 = buses,
+// pu = per unit, SVG = the drawing format, DOM = the page elements, "slot" = "r" (ratio) or "p" (phase) tap changer
+// of one end (each end can have one of each).
 // ---- solver.mjs, inlined by bundle.py (own scope, so its helpers do not clash) ----
 const __solver = (() => {
 // Load flow for the tap-configuration simulator: a slack bus B1, a two- or three-winding transformer TX with tap
@@ -116,28 +126,70 @@ const __solver = (() => {
 //    (the convention of ENTSO-E's CGMES 2.4.15 PST conformity cases);
 //  - winding impedances on the internal side, magnetizing admittance split half/half (2W) or at the star point (3W);
 //  - per unit on 100 MVA and the bus nominal voltages (= rated voltages); polar Newton-Raphson.
+//
+// For beginners (see docs/beginner/ for the long version):
+//  - Where it sits: index.html (the page) imports this module; test_solver.mjs / test_control.mjs call it from
+//    Node.js. It imports nothing itself.
+//  - Main steps: defaultModel() gives the input data -> build() turns it into the admittance matrix Y and the loads
+//    -> solve() finds the bus voltages with Newton-Raphson -> results() turns voltages into flows and losses ->
+//    chains() splits the voltage change into one step per tap changer. solveWithControl() repeats solve() and moves
+//    tap steps like an automatic controller.
+//  - Read first: tapValue(), build(), solve(), solveWithControl().
+//  - Words: bus = a node of the grid (B1, B2, B3); pu = per unit (a value divided by its base value, so 1.0 pu =
+//    nominal); slack bus = the bus with a fixed voltage that supplies whatever power is missing (here B1, the grid);
+//    TX = the transformer under test, TP = a plain parallel transformer; 2W / 3W = two- / three-winding;
+//    RTC = RatioTapChanger (changes the voltage size), PTC = PhaseTapChanger (changes the voltage angle);
+//    n = tap step, n0 = neutral step (the step where the tap changer does nothing); SV = the solved state of a
+//    CGMES case (its expected answer); Y = admittance matrix (1/impedance, how easily current flows between buses).
+//  - Complex numbers are plain objects { re, im } (real and imaginary part). A voltage phasor is such a number:
+//    its length abs() is the voltage size, its direction arg() is the voltage angle.
 
+/** Base power of the per-unit system, in MVA: 1.0 pu of power = 100 MVA. */
 const SBASE = 100;
 
 // ---------------------------------------------------------------- complex numbers
+// Tiny complex-number library. A complex number is an "arrow" in the plane: re = x part, im = y part.
+
+/** Make a complex number re + j*im (j is the imaginary unit, j*j = -1). Example: C(1, 0.5). */
 const C = (re, im = 0) => ({ re, im });
+/** a + b. */
 const add = (a, b) => C(a.re + b.re, a.im + b.im);
+/** a - b. */
 const sub = (a, b) => C(a.re - b.re, a.im - b.im);
+/** a * b: (ar + j ai)(br + j bi) = (ar br - ai bi) + j (ar bi + ai br). Lengths multiply, angles add. */
 const mul = (a, b) => C(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re);
+/** Complex conjugate: mirror the arrow on the x axis (same length, angle -> -angle). */
 const conj = (a) => C(a.re, -a.im);
+/** Length of the arrow (magnitude): sqrt(re^2 + im^2). */
 const abs = (a) => Math.hypot(a.re, a.im);
+/** Angle of the arrow in radians (-pi..pi), measured from the positive x axis. */
 const arg = (a) => Math.atan2(a.im, a.re);
+/** Arrow with length m and angle rad (radians): m * (cos rad + j sin rad) = m * e^(j rad). */
 const polar = (m, rad) => C(m * Math.cos(rad), m * Math.sin(rad));
+/** a / b: multiply by conj(b) and divide by |b|^2. Lengths divide, angles subtract. */
 const div = (a, b) => {
   const d = b.re * b.re + b.im * b.im;
   return C((a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d);
 };
+/** a * k for a real number k (stretch the arrow). */
 const scale = (a, k) => C(a.re * k, a.im * k);
+/** Radians to degrees. */
 const deg = (rad) => (rad * 180) / Math.PI;
+/** Degrees to radians. */
 const rad = (d) => (d * Math.PI) / 180;
 
 // ---------------------------------------------------------------- defaults (the data of the 64 test cases)
+/** Nominal voltage in kV of each transformer end (= of the bus it connects to): end 1 = B1, end 2 = B2, end 3 = B3. */
 const KV = { 1: 220, 2: 110, 3: 20 };
+
+/**
+ * Input data of a simulator case with the values of the 64 CGMES test cases, without tap changers.
+ * @param {number} windings 2 (two-winding TX, buses B1-B2) or 3 (three-winding TX, buses B1-B2-B3).
+ * @returns {object} model: vSourceKv = grid voltage at B1 in kV (225); tx2 / tx3 = transformer nameplate data
+ *   (S = rated power in MVA, uk = short-circuit voltage in %, ur = resistive part in %, i0 = no-load current in %,
+ *   p0 = no-load losses in %); tp = the parallel transformer TP; loads in MW / Mvar; noLoad = true opens the other
+ *   windings (no load, no TP); end2Rule "keep" or "invert" (see tapValue); taps = list of tap changers (empty).
+ */
 function defaultModel(windings = 2) {
   return {
     windings,
@@ -153,6 +205,7 @@ function defaultModel(windings = 2) {
 }
 
 // ---------------------------------------------------------------- tap changers
+/** Short tap-changer type codes used in the model -> CGMES class names. */
 const TAP_TYPES = {
   RTC: "RatioTapChanger",
   PTClin: "PhaseTapChangerLinear",
@@ -161,35 +214,54 @@ const TAP_TYPES = {
   PTCtab: "PhaseTapChangerTabular",
 };
 
-/** ratio, angle (deg) and t of one tap changer at its step, in its own winding's reading (or inverted). */
+/**
+ * Ratio, angle (deg) and t of one tap changer at its step, in its own winding's reading (or inverted).
+ * The tap changer works like an ideal transformer at its end: v_terminal = t * v_internal, t = ratio * e^(j angle).
+ * @param {object} tc tap changer: { type: "RTC"|"PTClin"|"PTCsym"|"PTCasym"|"PTCtab", end: 1|2|3, step, neutral,
+ *   svi (RTC: % per step, e.g. 1.25), deg (PTClin: degrees per step, e.g. 1.5), vsi (PTCsym/asym: % per step),
+ *   theta (PTCasym: windingConnectionAngle in degrees, e.g. 60), table (PTCtab: [{step, angle, ratio}]) }.
+ *   Example: { type: "RTC", end: 1, step: 14, neutral: 11, svi: 1.25 } gives ratio 1.0375.
+ * @param {string} end2Rule "keep" (each tap changer describes its own winding) or "invert" (PTClin / PTCtab on
+ *   end 2 or 3 use 1/ratio and -angle, an older convention).
+ * @returns {{ratio:number, angle:number, t:object, formula:string, inverted:boolean}} ratio (no unit), angle in
+ *   degrees, t as a complex number, the formula as text for the page, and whether the inversion was applied.
+ */
 function tapValue(tc, end2Rule = "keep") {
-  const n = tc.step - tc.neutral;
+  const n = tc.step - tc.neutral;          // steps away from neutral (0 = the tap changer does nothing)
   let ratio = 1;
   let angle = 0;
   let formula = "";
   if (tc.type === "RTC") {
+    // Ratio tap changer: each step adds stepVoltageIncrement % to the voltage, no angle.
     ratio = 1 + (n * tc.svi) / 100;
     formula = `ratio = 1 + (${tc.step} − ${tc.neutral}) · ${tc.svi} / 100 = ${ratio.toFixed(4)}`;
   } else if (tc.type === "PTClin") {
+    // Linear phase shifter: each step turns the voltage by a fixed angle, size unchanged.
     angle = n * tc.deg;
     formula = `angle = (${tc.step} − ${tc.neutral}) · ${tc.deg}° = ${angle.toFixed(3)}°`;
   } else if (tc.type === "PTCsym") {
+    // Symmetrical phase shifter: an added voltage du at 90° to the voltage, split half on each side, so the
+    // size stays the same and the angle is 2 * atan(du / 2).
     const du = (n * tc.vsi) / 100;
     angle = deg(2 * Math.atan(du / 2));
     formula = `du = ${du.toFixed(4)}; angle = 2·atan(du/2) = ${angle.toFixed(3)}°`;
   } else if (tc.type === "PTCasym") {
+    // Asymmetrical phase shifter: an added voltage du at the fixed angle theta (windingConnectionAngle).
+    // c = 1 + du * e^(j theta); both the size (ratio = |c|) and the angle (arg c) change.
     const du = (n * tc.vsi) / 100;
     const c = C(1 + du * Math.cos(rad(tc.theta)), du * Math.sin(rad(tc.theta)));
     ratio = abs(c);
     angle = deg(arg(c));
     formula = `c = 1 + ${du.toFixed(4)}·e^(j${tc.theta}°) = ${c.re.toFixed(5)} + j${c.im.toFixed(5)}: ratio ${ratio.toFixed(5)}, angle ${angle.toFixed(3)}°`;
   } else if (tc.type === "PTCtab") {
+    // Tabular phase shifter: the angle and ratio are read from a table row (missing row -> no effect).
     const p = tc.table.find((x) => x.step === tc.step) || { angle: 0, ratio: 1 };
     ratio = p.ratio;
     angle = p.angle;
     formula = `table point ${tc.step}: angle ${angle}°, ratio ${ratio}`;
   }
   let inverted = false;
+  // Optional old convention: linear / tabular phase shifters on end 2 or 3 are read "from the other side".
   if (end2Rule === "invert" && tc.end > 1 && (tc.type === "PTClin" || tc.type === "PTCtab")) {
     ratio = 1 / ratio;
     angle = -angle;
@@ -199,20 +271,43 @@ function tapValue(tc, end2Rule = "keep") {
 }
 
 // ---------------------------------------------------------------- network
+/**
+ * Add ("stamp") the small matrix y of one element into the big bus matrix Y, in place.
+ * @param {object[][]} Y bus admittance matrix (complex, pu), changed in place.
+ * @param {number[]} buses bus index of each element terminal, e.g. [0, 1].
+ * @param {object[][]} y element admittance matrix, same order as buses.
+ */
 function stamp(Y, buses, y) {
+  // same as: for a, for b: Y[buses[a]][buses[b]] += y[a][b]
   buses.forEach((bi, a) => buses.forEach((bj, b) => { Y[bi][bj] = add(Y[bi][bj], y[a][b]); }));
 }
 
+/**
+ * Move an element matrix from the internal side of the ideal tap transformers to the bus terminals.
+ * @param {object[][]} yint admittance matrix between the internal nodes (pu).
+ * @param {object[]} a per terminal: internal voltage = a * bus voltage (a = 1 / t).
+ * @returns {object[][]} Y_terminal[i][k] = conj(a_i) * yint[i][k] * a_k.
+ */
 function terminalY(yint, a) {
   // Y = conj(A) * Yint * A with A = diag(a): currents into the element from its terminals
+  // Why: v_internal = a * v_bus, and an ideal transformer keeps power, so i_bus = conj(a) * i_internal.
   return yint.map((row, i) => row.map((v, k) => mul(mul(conj(a[i]), v), a[k])));
 }
 
+/**
+ * Turn the model into network data: bus list, admittance matrix Y, loads and the element matrices.
+ * @param {object} model see defaultModel(); model.taps lists the tap changers (tapValue() for the fields).
+ * @returns {object} { names: ["B1","B2"(,"B3")], kv: nominal kV per bus, nb: number of nodes (3W adds a hidden
+ *   star point), Y: nb x nb complex matrix in pu, load: complex load per node in pu (P + jQ, consumed),
+ *   elements: [{ name, buses, terminals, Y, data }], tapVals: tap changers with ratio/angle/t, tEnd: product of the
+ *   t of all tap changers per end, vs: B1 voltage in pu }.
+ */
 function build(model) {
   const w = model.windings;
   const names = w === 2 ? ["B1", "B2"] : ["B1", "B2", "B3"];
-  const kv = names.map((b) => KV[+b[1]]);
+  const kv = names.map((b) => KV[+b[1]]);      // "B2" -> KV[2] = 110
   let nb = names.length;
+  // Total tap factor per end. Two tap changers on one end act one after the other, so their t multiply.
   const tEnd = { 1: C(1), 2: C(1), 3: C(1) };
   const tapVals = model.taps.filter((tc) => tc.end <= w).map((tc) => ({ ...tc, ...tapValue(tc, model.end2Rule) }));
   tapVals.forEach((tv) => { tEnd[tv.end] = mul(tEnd[tv.end], tv.t); });
@@ -221,16 +316,22 @@ function build(model) {
   if (w === 2) {
     const d = model.tx2;
     const U1 = 220;
+    // Nameplate -> ohm on the 220 kV side: |z| = uk/100 * U^2 / S, r = ur/100 * U^2 / S, x = sqrt(|z|^2 - r^2).
+    // Example: uk 12 %, ur 0.3 %, S 250 MVA: |z| = 0.12 * 220^2 / 250 = 23.232 ohm, r = 0.5808 ohm, x = 23.225 ohm.
     const zOhm = (d.uk / 100) * (U1 * U1) / d.S;
     const r = (d.ur / 100) * (U1 * U1) / d.S;
     const x = Math.sqrt(Math.max(zOhm * zOhm - r * r, 1e-12));
-    const zb = (U1 * U1) / SBASE;
-    const z = C(r / zb, x / zb);
+    const zb = (U1 * U1) / SBASE;               // base impedance in ohm: U^2 / Sbase = 484 ohm
+    const z = C(r / zb, x / zb);                // series impedance in pu
+    // Magnetizing branch (no-load data): g = p0/100 * S / U^2 (siemens, iron losses),
+    // b = -sqrt(i0^2 - p0^2)/100 * S / U^2 (siemens, negative = inductive, the core draws reactive power).
     const g = (d.p0 / 100) * d.S / (U1 * U1);
     const bm = -Math.sqrt(Math.max(d.i0 * d.i0 - d.p0 * d.p0, 0)) / 100 * d.S / (U1 * U1);
-    const ym = scale(C(g, bm), zb);
-    const y = div(C(1), z);
+    const ym = scale(C(g, bm), zb);             // siemens -> pu: multiply by the base impedance
+    const y = div(C(1), z);                     // series admittance y = 1 / z
+    // Pi model between the two internal nodes: y in series, half of the magnetizing admittance at each side.
     const yint = [[add(y, scale(ym, 0.5)), scale(y, -1)], [scale(y, -1), add(y, scale(ym, 0.5))]];
+    // v_internal = v_bus / t_end, so a = 1 / t.
     const a = [div(C(1), tEnd[1]), div(C(1), tEnd[2])];
     elements.push({ name: "TX", buses: [0, 1], terminals: ["TX T1", "TX T2"], Y: terminalY(yint, a),
                     data: { r_ohm: [r, 0], x_ohm: [x, 0], g_S: g, b_S: bm } });
@@ -239,29 +340,36 @@ function build(model) {
     const [s1, s2, s3] = d.S;
     const u = [220, 110, 20];
     // exact pair impedances ur + j*sqrt(uk^2 - ur^2) on the smaller rating of the pair, then star (ohm per kV^2)
+    // A 3-winding transformer is measured in pairs (1-2, 1-3, 2-3). The star (T) equivalent has one impedance per
+    // winding joined at a hidden star point: z1 = (z12 + z13 - z23) / 2, z2 = (z12 + z23 - z13) / 2,
+    // z3 = (z13 + z23 - z12) / 2. Here z is in "ohm per kV^2", so z * U^2 gives ohm on each winding's voltage.
     const pair = (uk, ur, sa, sb) => C(ur / 100 / Math.min(sa, sb), Math.sqrt(Math.max(uk * uk - ur * ur, 0)) / 100 / Math.min(sa, sb));
     const z12 = pair(d.uk12, d.ur12, s1, s2), z13 = pair(d.uk13, d.ur13, s1, s3), z23 = pair(d.uk23, d.ur23, s2, s3);
     const zs = [scale(sub(add(z12, z13), z23), 0.5), scale(sub(add(z12, z23), z13), 0.5), scale(sub(add(z13, z23), z12), 0.5)];
-    const star = nb++;
+    const star = nb++;                          // the star point becomes an extra (hidden) node
     const yint = Array.from({ length: 4 }, () => Array.from({ length: 4 }, () => C(0)));
     const rr = [], xx = [];
     for (let k = 0; k < 3; k++) {
-      const r = zs[k].re * u[k] * u[k];
+      const r = zs[k].re * u[k] * u[k];         // ohm on winding k's rated voltage
       const x = zs[k].im * u[k] * u[k];
       rr.push(r); xx.push(x);
       const zb = (u[k] * u[k]) / SBASE;
       const y = div(C(1), C(r / zb, x / zb));
+      // branch between internal node k and the star point (index 3)
       yint[k][k] = add(yint[k][k], y); yint[3][3] = add(yint[3][3], y);
       yint[k][3] = sub(yint[k][3], y); yint[3][k] = sub(yint[3][k], y);
     }
+    // magnetizing admittance (see the 2W case) at the star point, on the 220 kV base and S1
     const g = (d.p0 / 100) * s1 / (220 * 220);
     const bm = -Math.sqrt(Math.max(d.i0 * d.i0 - d.p0 * d.p0, 0)) / 100 * s1 / (220 * 220);
     yint[3][3] = add(yint[3][3], scale(C(g, bm), (220 * 220) / SBASE));
+    // the star point has no tap changer: a = 1
     const a = [div(C(1), tEnd[1]), div(C(1), tEnd[2]), div(C(1), tEnd[3]), C(1)];
     elements.push({ name: "TX", buses: [0, 1, 2, star], terminals: ["TX T1", "TX T2", "TX T3"], Y: terminalY(yint, a),
                     data: { r_ohm: rr, x_ohm: xx, g_S: g, b_S: bm, star_x_negative: zs.some((z) => z.im <= 0) } });
   }
   // TP
+  // The plain parallel transformer B1-B2 (no tap changer). It is left out at no load (B2 is open there).
   if (model.tp.on && !model.noLoad) {
     const d = model.tp;
     const U1 = 220;
@@ -272,8 +380,10 @@ function build(model) {
     const y = div(C(1), C(r / zb, x / zb));
     elements.push({ name: "TP", buses: [0, 1], terminals: ["TP T1", "TP T2"], Y: [[y, scale(y, -1)], [scale(y, -1), y]] });
   }
+  // Bus admittance matrix: the sum of all element matrices.
   const Y = Array.from({ length: nb }, () => Array.from({ length: nb }, () => C(0)));
   elements.forEach((el) => stamp(Y, el.buses, el.Y));
+  // Loads in pu (MW / 100, Mvar / 100); positive = consumed.
   const load = Array.from({ length: nb }, () => C(0));
   if (!model.noLoad) {
     load[1] = C(model.loads.B2.p / SBASE, model.loads.B2.q / SBASE);
@@ -283,19 +393,29 @@ function build(model) {
 }
 
 // ---------------------------------------------------------------- Newton-Raphson
+/**
+ * Solve the linear system A x = b (real numbers) by Gaussian elimination with row pivoting.
+ * @param {number[][]} A square matrix (the Jacobian), not changed.
+ * @param {number[]} b right-hand side.
+ * @returns {number[]} x.
+ * @throws {Error} "singular Jacobian ..." when a pivot is (almost) zero, e.g. a bus with no connection.
+ */
 function solveLinear(A, b) {
   const n = b.length;
-  const M = A.map((row, i) => [...row, b[i]]);
+  const M = A.map((row, i) => [...row, b[i]]);   // augmented matrix [A | b]
   for (let c = 0; c < n; c++) {
+    // pivoting: use the row with the largest value in column c (better accuracy)
     let p = c;
     for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
     if (Math.abs(M[p][c]) < 1e-14) throw new Error("singular Jacobian (island or zero impedance?)");
     [M[c], M[p]] = [M[p], M[c]];
+    // eliminate column c from all rows below
     for (let r = c + 1; r < n; r++) {
       const f = M[r][c] / M[c][c];
       if (f !== 0) for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
     }
   }
+  // back substitution: solve from the last row upwards
   const x = new Array(n).fill(0);
   for (let r = n - 1; r >= 0; r--) {
     let s = M[r][n];
@@ -305,21 +425,38 @@ function solveLinear(A, b) {
   return x;
 }
 
+/**
+ * Load flow: find the bus voltages for which every bus (except the slack B1) gets exactly its load.
+ * Newton-Raphson in polar form: unknowns are angle and size of each voltage; repeat "compute mismatch, linearise
+ * (Jacobian), solve for a correction" until the mismatch is below tol.
+ * @param {object} model see defaultModel().
+ * @param {{tol?:number, maxIter?:number}} opts tol = largest allowed power mismatch in pu (1e-11 pu = 1e-9 MVA).
+ * @returns {object} { ok: converged (mismatch < 1e-8 pu), iterations, mismatchMva, buses, flows, losses, taps,
+ *   tEnd, chains, elements } (see results()). Does not throw when it does not converge; ok is then false.
+ * @throws {Error} from solveLinear() when the Jacobian is singular.
+ */
 function solve(model, { tol = 1e-11, maxIter = 40 } = {}) {
   const net = build(model);
   const { nb, Y, load } = net;
+  // flat start: every voltage 1.0 pu at 0 degrees, B1 at the source voltage
   let V = Array.from({ length: nb }, () => C(1));
   V[0] = C(net.vs);
-  const pq = [...Array(nb).keys()].slice(1);
+  const pq = [...Array(nb).keys()].slice(1);     // all nodes except the slack B1 (index 0) are unknown (PQ buses)
   let it = 0;
   let mis = Infinity;
   for (; it < maxIter; it++) {
+    // I = Y V (current injected at each node), S = V conj(I) (complex power injected, P + jQ in pu)
     const I = V.map((_, i) => Y[i].reduce((s, y, k) => add(s, mul(y, V[k])), C(0)));
     const S = V.map((v, i) => mul(v, conj(I[i])));
+    // mismatch: injected power + load must be 0 at every PQ node (first all P rows, then all Q rows)
     const F = [...pq.map((i) => S[i].re + load[i].re), ...pq.map((i) => S[i].im + load[i].im)];
     mis = Math.max(...F.map(Math.abs));
     if (mis < tol) break;
     const m = pq.length;
+    // Jacobian J = d(mismatch) / d(angles, sizes), 2m x 2m. Complex derivatives of S_i:
+    //   dS_i/dtheta_k = j V_i conj(delta_ik I_i - Y_ik V_k)
+    //   dS_i/d|V_k|   = V_i conj(Y_ik V_k/|V_k|) + delta_ik conj(I_i) V_k/|V_k|   (delta_ik = 1 if i = k, else 0)
+    // Real parts go to the P rows, imaginary parts to the Q rows.
     const J = Array.from({ length: 2 * m }, () => new Array(2 * m).fill(0));
     pq.forEach((i, a) => pq.forEach((k, b) => {
       const vn = div(V[k], C(abs(V[k])));
@@ -329,6 +466,7 @@ function solve(model, { tol = 1e-11, maxIter = 40 } = {}) {
       if (i === k) dVm = add(dVm, mul(conj(I[i]), vn));
       J[a][b] = dVa.re; J[a][b + m] = dVm.re; J[a + m][b] = dVa.im; J[a + m][b + m] = dVm.im;
     }));
+    // Newton step: J dx = -F, then angle += dx[angle part], size += dx[size part]
     const dx = solveLinear(J, F.map((f) => -f));
     pq.forEach((i, a) => {
       const vm = abs(V[i]) + dx[a + m];
@@ -340,6 +478,14 @@ function solve(model, { tol = 1e-11, maxIter = 40 } = {}) {
   return { ok, iterations: it, mismatchMva: mis * SBASE, ...results(model, net, V) };
 }
 
+/**
+ * Turn the solved voltages into the numbers shown on the page.
+ * @param {object} model the input model. @param {object} net output of build(). @param {object[]} V voltages (pu).
+ * @returns {object} buses: { B1: { kvNominal, vKv (kV), vPu, angleDeg, pu (complex) }, ... };
+ *   flows: { "TX T1": { p (MW), q (Mvar) }, ... } = power flowing INTO the element at that terminal
+ *   (load sign), plus LD2/LD3 (loads) and Grid (power the grid at B1 delivers); losses: per element, MW / Mvar
+ *   (sum of the terminal flows); taps, tEnd, chains (see chains()), elements.
+ */
 function results(model, net, V) {
   const buses = {};
   net.names.forEach((b, i) => {
@@ -351,10 +497,11 @@ function results(model, net, V) {
     const vs = el.buses.map((b) => V[b]);
     let tot = C(0);
     el.terminals.forEach((t, a) => {
+      // current into the element at terminal a: i = sum_k Y[a][k] * v_k; power s = v * conj(i) * 100 MVA
       const i = el.Y[a].reduce((s, y, k) => add(s, mul(y, vs[k])), C(0));
       const s = scale(mul(vs[a], conj(i)), SBASE);
       flows[t] = { p: s.re, q: s.im };
-      tot = add(tot, s);
+      tot = add(tot, s);                          // what goes in at all terminals together = losses
     });
     losses[el.name] = { p: tot.re, q: tot.im };
   });
@@ -362,18 +509,29 @@ function results(model, net, V) {
     flows["LD2"] = { p: model.loads.B2.p, q: model.loads.B2.q };
     if (model.windings === 3) flows["LD3"] = { p: model.loads.B3.p, q: model.loads.B3.q };
   }
+  // the grid at B1 supplies what TX and TP take at B1 (sign flipped: positive = delivered to B1's elements)
   const atB1 = Object.entries(flows).filter(([k]) => k === "TX T1" || k === "TP T1");
   flows["Grid"] = { p: -atB1.reduce((s, [, f]) => s + f.p, 0), q: -atB1.reduce((s, [, f]) => s + f.q, 0) };
   return { buses, flows, losses, taps: net.tapVals, tEnd: net.tEnd, chains: chains(model, net, buses), elements: net.elements };
 }
 
-/** Contribution of each tap changer to the voltage of B2 (and B3): start V1 (no taps), / t1, * t_end, network. */
+/**
+ * Contribution of each tap changer to the voltage of B2 (and B3): start V1 (no taps), / t1, * t_end, network.
+ * Used for the phasor chain and the waterfall chart on the page.
+ * @param {object} model the input model. @param {object} net output of build(). @param {object} buses from results().
+ * @returns {object[]} per bus B2 (and B3): { bus, kv, start: V1 (complex pu), steps: [{ label, op, kind
+ *   ("rt" ratio / "ph" phase / "net" network), a: phasor before, b: phasor after }] }. The last step is the
+ *   network part: from the ideal no-impedance voltage to the solved voltage.
+ */
 function chains(model, net, buses) {
   // one step per tap changer: ÷ t for those on end 1, × t for those on end 2/3; two on one end: ratio first
+  // Why: the ideal open-circuit voltage at end k is E_k = V1 * t_k / t_1 (in pu), so a tap changer on end 1
+  // divides and one on end 2 or 3 multiplies.
   const v1 = buses.B1.pu;
   const out = [];
   const byEnd = {};
   net.tapVals.forEach((tv) => { (byEnd[tv.end] = byEnd[tv.end] || []).push(tv); });
+  // sort so that the RTC (ratio) comes before the PTC on the same end (false - true = -1)
   Object.values(byEnd).forEach((l) => l.sort((a, b) => (a.type !== "RTC") - (b.type !== "RTC")));
   const ends = model.windings === 2 ? [["B2", 2]] : [["B2", 2], ["B3", 3]];
   for (const [bus, end] of ends) {
@@ -396,7 +554,11 @@ function chains(model, net, buses) {
 }
 
 // ---------------------------------------------------------------- automatic tap control
-/** Value a controller looks at: "V:B2" / "V:B3" (kV) or "P:TX" (MW into TX at its 220 kV terminal). */
+/**
+ * Value a controller looks at: "V:B2" / "V:B3" (kV) or "P:TX" (MW into TX at its 220 kV terminal).
+ * @param {object} result output of solve(). @param {string} target e.g. "V:B2".
+ * @returns {number|undefined} kV or MW; undefined if the bus does not exist.
+ */
 function measured(result, target) {
   if (target.startsWith("V:")) return result.buses[target.slice(2)]?.vKv;
   return result.flows["TX T1"]?.p;
@@ -409,17 +571,26 @@ function measured(result, target) {
  * would move back to a step it just left after reversing (hunting: the band is narrower than one step's effect)
  * and does not move when one step does not change its value (e.g. a phase shifter without a parallel path).
  * Returns the final load flow, the moves and the state of each controller.
+ * @param {object} model see defaultModel(); a tap changer with control: { on: true, target: "V:B2"|"V:B3"|"P:TX",
+ *   value: setpoint (kV or MW), deadband (kV or MW, full width) } and step limits low / high is controlled.
+ *   Side effect: tc.step of the controlled tap changers is changed in place (the final steps).
+ * @param {{maxRounds?:number}} opts at most this many rounds (60).
+ * @returns {object} solve() result plus controlLog: [{ round, tap, from, to, value }] and controlState:
+ *   [{ tap, target, value, setpoint, step, status: "held"|"no effect"|"hunting"|"at limit"|"not held", stepEffect }].
  */
 function solveWithControl(model, { maxRounds = 60 } = {}) {
   const ctl = model.taps.filter((t) => t.control && t.control.on);
   let r = solve(model);
   const log = [];
+  // per controlled tap changer: dir = +1/-1 (which step direction raises the value), effect = size of one step,
+  // last = the previous move, stopped = reason why it no longer moves
   const dir = new Map(), effect = new Map(), last = new Map(), stopped = new Map();
   for (let round = 0; round < maxRounds && r.ok; round++) {
     let moved = false;
     for (const tc of ctl) {
       const c = tc.control;
       const val = measured(r, c.target);
+      // inside the deadband (|value - setpoint| <= deadband / 2): nothing to do
       if (val === undefined || stopped.has(tc) || Math.abs(val - c.value) <= c.deadband / 2) continue;
       if (!dir.has(tc)) {            // sensitivity: what does one step up do to the controlled value?
         const old = tc.step;
@@ -431,6 +602,7 @@ function solveWithControl(model, { maxRounds = 60 } = {}) {
         effect.set(tc, Math.abs(d));
         if (!(Math.abs(d) > 1e-6 * Math.max(1, Math.abs(val)))) { stopped.set(tc, "no effect"); continue; }
       }
+      // value too low -> step in the direction that raises it, too high -> the other way; stay within low..high
       const want = val < c.value ? dir.get(tc) : -dir.get(tc);
       const next = Math.min(Math.max(tc.step + want, tc.low), tc.high);
       if (next === tc.step) continue;
@@ -442,7 +614,7 @@ function solveWithControl(model, { maxRounds = 60 } = {}) {
       moved = true;
     }
     if (!moved) break;
-    r = solve(model);
+    r = solve(model);                // new load flow with the new steps, then the next round
   }
   const state = ctl.map((tc) => {
     const val = measured(r, tc.control.target);
@@ -465,24 +637,47 @@ const { solve, solveWithControl, tapValue, TAP_TYPES, abs, arg, div } = __solver
 // Explanation of a tap-changer combination: what each tap changer does, how they combine, what the network makes of
 // it, and the matching pair of example cases (loaded TCnn / no load NLnn). Used by index.html (live, for the current
 // model) and by explain_all.mjs (EXPLANATIONS.md and explanations.html for all 32 configurations).
+//
+// For beginners: explain(model, result) builds the explanation as data (sections with paragraphs, list items, a
+// table and buttons); renderHtml() / renderMarkdown() turn that data into HTML or Markdown. Every sentence is a
+// template filled with numbers of the current load flow, so the text always matches what the page shows.
+// Main steps of explain(): describe the combination -> tapItem() per tap changer (formula, kind, end) ->
+// interaction() (how ends combine: only t_k / t_1 matters between buses) -> network() (what load and the parallel
+// TP make of it, compared with the same network without tap changers) -> the pair table (TCnn / NLnn) ->
+// reading() (what a program reading such a case must get right).
+// Read first: explain(), network(), interaction(), renderHtml().
+// Words: t = complex tap factor ratio * e^(j angle); TX / TP = transformer under test / plain parallel transformer;
+// TC / NL = loaded / no-load case; RTC / PTC = ratio / phase tap changer; n = step - neutral; du = voltage step.
+// Do not change the text templates lightly: EXPLANATIONS.md and explanations.html are generated from them and
+// test_explain.mjs checks parts of the wording (e.g. the pair heading).
 
 
-const KVE = { 1: 220, 2: 110, 3: 20 };
-const DEG = 180 / Math.PI;
+const KVE = { 1: 220, 2: 110, 3: 20 };    // rated kV per end
+const DEG = 180 / Math.PI;                // radians -> degrees
+/** x, or 0 when it would print as -0.000 with n decimals. */
 const z = (x, n) => (Math.abs(x) < 0.5 * 10 ** -n ? 0 : x);                // no "-0.000"
+/** Fixed-point text with n decimals, e.g. fx(1.23456) = "1.235". */
 const fx = (x, n = 3) => z(x, n).toFixed(n);
+/** Same with a sign, e.g. sg(4.5) = "+4.500". */
 const sg = (x, n = 3) => (z(x, n) >= 0 ? "+" : "") + z(x, n).toFixed(n);
+/** Angle in degrees wrapped to -180 .. +180. */
 const wrap = (d) => ((d + 540) % 360) - 180;
+/** English list: ["a"] -> "a", ["a","b"] -> "a and b", ["a","b","c"] -> "a, b and c". */
 const lst = (a) => (a.length < 3 ? a.join(" and ") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1]);
+/** Sort order of tap changers: by end, ratio tap changer first. */
 const order = (a, b) => a.end - b.end || (a.type === "RTC" ? -1 : 1);
+/** True for a phase tap changer (any type except RTC). */
 const isPhase = (t) => t.type !== "RTC";
 
-/** Configuration key: windings + tap changer types per end (steps and data do not count). */
+/** Configuration key: windings + tap changer types per end (steps and data do not count).
+ * Example: configKey(2, [{ end: 2, type: "PTClin" }, { end: 1, type: "RTC" }]) = "2W:1RTC+2PTClin". */
 function configKey(windings, taps) {
   return `${windings}W:` + taps.map((t) => `${t.end}${t.type}`).sort().join("+");
 }
 
-/** The model of an example case, as the page loads it. */
+/** The model of an example case, as the page loads it.
+ * @param {object} p one entry of presets.json. @param {Function} defaultModel from solver.mjs (passed in, so this
+ * file needs only what it imports). @returns {object} model; no-load cases get i0 0.10 %, p0 0.04 %. */
 function presetModel(p, defaultModel) {
   const m = defaultModel(p.windings);
   m.noLoad = p.noload;
@@ -491,7 +686,8 @@ function presetModel(p, defaultModel) {
   return m;
 }
 
-/** The pair of example cases (loaded TC, no load NL) with the same combination, or null. */
+/** The pair of example cases (loaded TC, no load NL) with the same combination, or null.
+ * @returns {{row:number, tc:object|undefined, nl:object|undefined}|null} */
 function findPair(model, presets) {
   const key = configKey(model.windings, model.taps);
   const tc = presets.find((p) => !p.noload && configKey(p.windings, p.taps) === key);
@@ -499,6 +695,7 @@ function findPair(model, presets) {
   return tc || nl ? { row: (tc || nl).row, tc, nl } : null;
 }
 
+/** The model as a JSON string without control settings and helper flags, to compare two models. */
 function normalized(m) {
   const c = structuredClone(m);
   for (const t of [c.tx2, c.tx3]) delete t.autoMag;
@@ -506,6 +703,7 @@ function normalized(m) {
   return JSON.stringify(c);
 }
 
+/** How much one tap changer moves each bus: [{ bus, dv (kV), da (degrees) }] from the result's chains. */
 function contributions(r, tc) {
   const label = `${tc.type} end ${tc.end}`;
   const out = [];
@@ -518,6 +716,7 @@ function contributions(r, tc) {
   return out;
 }
 
+// one sentence per tap-changer type: what it does and its formula
 const KIND = {
   RTC: "A ratio tap changer scales the winding voltage in phase: t = 1 + n · stepVoltageIncrement / 100 with n = step − neutral; the angle stays 0°.",
   PTClin: "A linear phase tap changer turns the voltage by n · stepPhaseShiftIncrement and leaves the magnitude at 1. CGMES describes it only by the angle per step, not by a winding design.",
@@ -526,6 +725,7 @@ const KIND = {
   PTCtab: "A tabular phase tap changer takes angle and ratio of every step from its table. The points need not be equidistant, so no formula converts a step into an angle.",
 };
 
+/** One sentence on what the end of a tap changer means (end 1 divides, end 2 / 3 multiply). w = windings. */
 function place(tc, w) {
   const e = tc.end;
   const what = tc.type === "RTC" ? "a ratio above 1 lowers it"
@@ -542,6 +742,7 @@ function place(tc, w) {
     + (isPhase(tc) ? " B3 is fed only through TX, so the phase shift turns B3's angle but cannot steer any power." : "");
 }
 
+/** The full list item for one tap changer: formula with numbers, kind, end and its effect in this load flow. */
 function tapItem(model, r, tc) {
   const v = tapValue(tc, model.end2Rule);
   const head = `${TAP_TYPES[tc.type]} on end ${tc.end} (${KVE[tc.end]} kV), step ${tc.step} (neutral ${tc.neutral}): ${v.formula}.`;
@@ -554,6 +755,7 @@ function tapItem(model, r, tc) {
   return head + inv + " " + KIND[tc.type] + extra + " " + place(tc, model.windings) + here;
 }
 
+/** Effective ratio from B1 to each other bus as text: "B1 → B2: t2 / t1 = 0.96386 at +0.000°". */
 function pathText(model, r) {
   const t1 = r.tEnd[1];
   const out = [];
@@ -564,6 +766,7 @@ function pathText(model, r) {
   return out;
 }
 
+/** Paragraphs on how the tap changers combine (product per end, end 1 against the others, three-winding paths). */
 function interaction(model, r) {
   const taps = model.taps;
   const paras = [];
@@ -587,6 +790,11 @@ function interaction(model, r) {
   return paras;
 }
 
+/**
+ * What the network makes of the tap changers: at no load the open-circuit voltages; with load and TP the
+ * circulating flow, found by solving the same model once more without tap changers and taking the difference.
+ * @returns {{title:string, paras:string[]}}
+ */
 function network(model, r) {
   const w = model.windings;
   const f = r.flows;
@@ -629,6 +837,7 @@ function network(model, r) {
   return { title: "With load and parallel TP", paras };
 }
 
+/** List items: the typical mistakes a program reading this case can make, with the numbers of this case. */
 function reading(model, r) {
   const items = [];
   const w = model.windings;
@@ -641,6 +850,7 @@ function reading(model, r) {
     if (tc.type === "PTCasym") items.push(`Asymmetrical: keep the in-phase part of the booster: ratio ${fx(v.ratio, 5)} (not 1) with ${sg(v.angle)}°.`);
     if (tc.type === "PTCtab") items.push(`Tabular: take point ${tc.step} of the table (${sg(v.angle, 1)}°, ratio ${fx(v.ratio, 3)}); do not interpolate a linear law.`);
     if ((tc.type === "PTClin" || tc.type === "PTCtab") && tc.end > 1) {
+      // solve once more with the other end-2 reading, to show what the wrong sign would give
       const alt = structuredClone(model);
       alt.end2Rule = model.end2Rule === "invert" ? "keep" : "invert";
       let ra = null;
@@ -660,6 +870,11 @@ function reading(model, r) {
 /**
  * Explanation of the current model and its load-flow result r (solveWithControl). Returns
  * { key, pair, sections: [{ id, title, paras?, items?, table?, actions? }] } with plain-text strings.
+ * @param {object} model the simulator model (see defaultModel in solver.mjs).
+ * @param {object} r its result from solveWithControl().
+ * @param {object[]} presets presets.json (to find the matching pair of example cases); [] = no pair section.
+ * @param {Function|null} defaultModel from solver.mjs; needed to tell whether the user changed the preset.
+ * @throws {Error} only if solve() throws for the comparison model without tap changers.
  */
 function explain(model, r, presets = [], defaultModel = null) {
   const w = model.windings;
@@ -716,9 +931,11 @@ function explain(model, r, presets = [], defaultModel = null) {
   return { key: configKey(w, model.taps), pair, sections };
 }
 
+/** Escape text for HTML (&, <, >, "). */
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-/** HTML for the page; actions become buttons (live page) or links to the simulator (static page). */
+/** HTML for the page; actions become buttons (live page) or links to the simulator (static page).
+ * @param {object} ex result of explain(). @param {{links?:boolean}} opts links: true for explanations.html. */
 function renderHtml(ex, { links = false } = {}) {
   return ex.sections.map((s) => {
     let h = `<h3>${esc(s.title)}</h3>`;
@@ -737,7 +954,7 @@ function renderHtml(ex, { links = false } = {}) {
   }).join("");
 }
 
-/** Markdown for EXPLANATIONS.md. */
+/** Markdown for EXPLANATIONS.md. @param {object} ex result of explain(). @param {number} level heading level. */
 function renderMarkdown(ex, level = 3) {
   const hh = "#".repeat(level);
   return ex.sections.map((s) => {
@@ -759,7 +976,8 @@ const { explain, renderHtml, presetModel: presetModelOf } = __explain;
 const PRESETS_INLINE = [{"code":"TC01_3W_RTC1_PTCtab2","row":1,"windings":3,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Three-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[109.20966539958809,0.27296061020754997],"B3":[19.44499807255474,-4.155990040833445]},"expected_inverted":{"B1":[225.0,0.0],"B2":[108.08781634901372,-5.124105470164483],"B3":[19.5613475123574,-1.339444431609652]},"expected_tx_p1":199.00713027895287},{"code":"TC02_3W_RTC1","row":2,"windings":3,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25}],"title":"Three-winding transformer: RatioTapChanger on end 1","expected":{"B1":[225.0,0.0],"B2":[108.78062526307636,-2.4062929964754582],"B3":[19.52134073769949,-2.7392932117713475]},"expected_inverted":null,"expected_tx_p1":100.01483931516407},{"code":"TC03_3W_RTC1_RTC2","row":3,"windings":3,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Three-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[106.17143328497411,-2.4119469167645113],"B3":[19.741496147194198,-2.72159847980098]},"expected_inverted":null,"expected_tx_p1":100.81478823199845},{"code":"TC04_3W_RTC1_RTC2_RTC3","row":4,"windings":3,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":3,"type":"RTC","low":1,"high":5,"neutral":3,"step":5,"svi":2.5}],"title":"Three-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2 + RatioTapChanger on end 3","expected":{"B1":[225.0,0.0],"B2":[106.17143328497411,-2.411946916764513],"B3":[20.72857095455391,-2.721598479800981]},"expected_inverted":null,"expected_tx_p1":100.81478823199849},{"code":"TC05_2W_RTC1_RTC2","row":5,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Two-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[105.99813546600281,-2.757090071779203]},"expected_inverted":null,"expected_tx_p1":98.5110169605566},{"code":"TC06_2W_RTC1_PTCasym2","row":6,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[110.64930214928147,-1.0315525321309376]},"expected_inverted":null,"expected_tx_p1":160.89324108438691},{"code":"TC07_2W_RTC1","row":7,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25}],"title":"Two-winding transformer: RatioTapChanger on end 1","expected":{"B1":[225.0,0.0],"B2":[108.60176223700849,-2.7532218518883464]},"expected_inverted":null,"expected_tx_p1":97.34227882379038},{"code":"TC08_2W_RTC1_PTClin2","row":8,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[108.5149318909958,-0.54898582529836]},"expected_inverted":{"B1":[225.0,0.0],"B2":[108.51493189099577,-4.966121153552351]},"expected_tx_p1":178.4009565136664},{"code":"TC09_3W_PTCtab1","row":9,"windings":3,"noload":false,"taps":[{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Three-winding transformer: PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[110.14329765902818,-5.080756787344701],"B3":[19.922564745720482,-6.765270029407806]},"expected_inverted":null,"expected_tx_p1":0.27805241662930513},{"code":"TC10_2W_PTCtab1","row":10,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Two-winding transformer: PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[109.97542298658206,-5.422330244695051]},"expected_inverted":null,"expected_tx_p1":-2.181788478743033},{"code":"TC11_2W_PTCsym1","row":11,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"Two-winding transformer: PhaseTapChangerSymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[110.61574064907784,-0.8226907740403687]},"expected_inverted":null,"expected_tx_p1":168.6978632589983},{"code":"TC12_2W_PTClin1","row":12,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Two-winding transformer: PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[110.58600799118508,-4.906934710642317]},"expected_inverted":null,"expected_tx_p1":16.13677761872486},{"code":"TC13_3W_PTCasym1","row":13,"windings":3,"noload":false,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Three-winding transformer: PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.61157853759461,-4.168702436898519],"B3":[19.49043463777683,-5.415059433556105]},"expected_inverted":null,"expected_tx_p1":35.50175234587518},{"code":"TC14_2W_PTCasym1","row":14,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Two-winding transformer: PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.43874449862079,-4.517776475749479]},"expected_inverted":null,"expected_tx_p1":32.88455526643421},{"code":"TC15_2W_PTCasym1_RTC2","row":15,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Two-winding transformer: PhaseTapChangerAsymmetrical on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[105.83652499417047,-4.563029005236727]},"expected_inverted":null,"expected_tx_p1":34.12995297593228},{"code":"TC16_3W_RTC2","row":16,"windings":3,"noload":false,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Three-winding transformer: RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[108.23921276004185,-2.320253334239247],"B3":[20.31473775299373,-2.582392669356356]},"expected_inverted":null,"expected_tx_p1":103.35118554946202},{"code":"TC17_3W_PTCasym2","row":17,"windings":3,"noload":false,"taps":[{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Three-winding transformer: PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[112.90699472901773,-0.562595750533485],"B3":[19.871138354554944,-3.517265773471693]},"expected_inverted":null,"expected_tx_p1":169.1293189051882},{"code":"TC18_2W_RTC2","row":18,"windings":2,"noload":false,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Two-winding transformer: RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[108.06861504638788,-2.6541948844823233]},"expected_inverted":null,"expected_tx_p1":101.20959861373197},{"code":"TC19_2W_PTClin2","row":19,"windings":2,"noload":false,"taps":[{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Two-winding transformer: PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[110.5860079911851,-0.4069347106423165]},"expected_inverted":{"B1":[225.0,0.0],"B2":[110.58600799118506,-4.906934710642318]},"expected_tx_p1":184.28999367520913},{"code":"TC20_2W_PTCasym2","row":20,"windings":2,"noload":false,"taps":[{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Two-winding transformer: PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[112.71935155791185,-0.9000070084004362]},"expected_inverted":null,"expected_tx_p1":166.22134994999337},{"code":"TC21_2W_PTCtab2","row":21,"windings":2,"noload":false,"taps":[{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Two-winding transformer: PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[111.08953593508552,0.07724301672466749]},"expected_inverted":{"B1":[225.0,0.0],"B2":[109.98963953968858,-5.4227569832753355]},"expected_tx_p1":202.72948613621327},{"code":"TC22_2W_PTCsym2","row":22,"windings":2,"noload":false,"taps":[{"end":2,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"Two-winding transformer: PhaseTapChangerSymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[110.61574064907776,-4.488369785924476]},"expected_inverted":null,"expected_tx_p1":31.67228857974578},{"code":"TC23_3W_PTCtab2","row":23,"windings":3,"noload":false,"taps":[{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Three-winding transformer: PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[111.27685186495675,0.41298268912626707],"B3":[20.0078880720568,-3.9782430716578348]},"expected_inverted":{"B1":[225.0,0.0],"B2":[110.1557398328212,-5.084663350782535],"B3":[20.127432897019677,-1.237669995072254]},"expected_tx_p1":205.4454136514062},{"code":"TC24_2W_RTC1_PTClin1","row":24,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[108.51493189099581,-4.966121153552349]},"expected_inverted":null,"expected_tx_p1":16.440201264761065},{"code":"TC25_2W_RTC2_PTClin2","row":25,"windings":2,"noload":false,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Two-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[107.98235755578037,-0.35654958554880084]},"expected_inverted":{"B1":[225.0,0.0],"B2":[107.98235755578041,-4.960183397568129]},"expected_tx_p1":185.28396723393305},{"code":"TC26_2W_RTC1_PTCsym1","row":26,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerSymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.54414247793001,-0.9570003950030662]},"expected_inverted":null,"expected_tx_p1":163.3839920334166},{"code":"TC27_2W_RTC1_PTCasym1","row":27,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[106.44407932357626,-4.587405326973433]},"expected_inverted":null,"expected_tx_p1":32.57356474375808},{"code":"TC28_2W_RTC1_PTCtab1","row":28,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[107.92515478585963,-5.472907136057337]},"expected_inverted":null,"expected_tx_p1":-1.2041549860747613},{"code":"TC29_3W_RTC1_PTClin1","row":29,"windings":3,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Three-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[108.68611462334503,-4.617104841844859],"B3":[19.517040279147157,-6.093514027422237]},"expected_inverted":null,"expected_tx_p1":19.034299568497946},{"code":"TC30_3W_RTC2_PTClin2","row":30,"windings":3,"noload":false,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Three-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[108.1605158945926,-0.02333957255101972],"B3":[20.295252273416345,-3.6899069229196413]},"expected_inverted":{"B1":[225.0,0.0],"B2":[108.14589872566717,-4.624291528563975],"B3":[20.30999895913929,-1.4809578246096222]},"expected_tx_p1":187.52437677326165},{"code":"TC31_2W_PTClin1_RTC2","row":31,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Two-winding transformer: PhaseTapChangerLinear on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[107.98235755578041,-4.960183397568129]},"expected_inverted":null,"expected_tx_p1":17.31052337436133},{"code":"TC32_2W_RTC2_PTCasym2","row":32,"windings":2,"noload":false,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Two-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[110.2145698104779,-0.8577828818969521]},"expected_inverted":null,"expected_tx_p1":167.30411216042256},{"code":"NL01_3W_RTC1_PTCtab2","row":1,"windings":3,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, three-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[109.51198627257732,5.498704171766051],"B3":[19.71412894195811,-0.0012958282339625865]},"expected_inverted":{"B1":[225.0,0.0],"B2":[107.35416750571255,-5.501295828233941],"B3":[19.714128941958116,-0.0012958282339615218]},"expected_tx_p1":0.09716208431900923},{"code":"NL02_3W_RTC1","row":2,"windings":3,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25}],"title":"No load, three-winding transformer: RatioTapChanger on end 1","expected":{"B1":[225.0,0.0],"B2":[108.42770918076974,-0.0012958282339616612],"B3":[19.714128941958133,-0.001295828233961496]},"expected_inverted":null,"expected_tx_p1":0.09716208431879349},{"code":"NL03_3W_RTC1_RTC2","row":3,"windings":3,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, three-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[103.54846226763497,-0.00129582823396183],"B3":[19.714128941958105,-0.0012958282339616874]},"expected_inverted":null,"expected_tx_p1":0.09716208431895246},{"code":"NL04_3W_RTC1_RTC2_RTC3","row":4,"windings":3,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":3,"type":"RTC","low":1,"high":5,"neutral":3,"step":5,"svi":2.5}],"title":"No load, three-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2 + RatioTapChanger on end 3","expected":{"B1":[225.0,0.0],"B2":[103.54846226763493,-0.0012958282339611655],"B3":[20.699835389056005,-0.001295828233960581]},"expected_inverted":null,"expected_tx_p1":0.09716208431895246},{"code":"NL05_2W_RTC1_RTC2","row":5,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[103.54846226763247,-0.001295828234553541]},"expected_inverted":null,"expected_tx_p1":0.09716730195395265},{"code":"NL06_2W_RTC1_PTCasym2","row":6,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[112.71398060009224,3.5809881265118295]},"expected_inverted":null,"expected_tx_p1":0.09716730195392426},{"code":"NL07_2W_RTC1","row":7,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25}],"title":"No load, two-winding transformer: RatioTapChanger on end 1","expected":{"B1":[225.0,0.0],"B2":[108.42770918076717,-0.0012958282345534292]},"expected_inverted":null,"expected_tx_p1":0.09716730195385613},{"code":"NL08_2W_RTC1_PTClin2","row":8,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[108.42770918076698,4.498704171765447]},"expected_inverted":{"B1":[225.0,0.0],"B2":[108.42770918076697,-4.501295828234555]},"expected_tx_p1":0.09716730195392426},{"code":"NL09_3W_PTCtab1","row":9,"windings":3,"noload":true,"taps":[{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, three-winding transformer: PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[111.3799487871767,-5.501295828233962],"B3":[20.250899779486673,-5.501295828233961]},"expected_inverted":null,"expected_tx_p1":0.1025251199136394},{"code":"NL10_2W_PTCtab1","row":10,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, two-winding transformer: PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[111.37994878717404,-5.501295828234554]},"expected_inverted":null,"expected_tx_p1":0.10253062554544212},{"code":"NL11_2W_PTCsym1","row":11,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"No load, two-winding transformer: PhaseTapChangerSymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[112.49374827504576,3.6643831836495657]},"expected_inverted":null,"expected_tx_p1":0.10459149111882977},{"code":"NL12_2W_PTClin1","row":12,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, two-winding transformer: PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[112.49374827504579,-4.5012958282345545]},"expected_inverted":null,"expected_tx_p1":0.10459149111888655},{"code":"NL13_3W_PTCasym1","row":13,"windings":3,"noload":true,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, three-winding transformer: PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.21585181964002,-3.583579782980342],"B3":[19.675609421752732,-3.583579782980342]},"expected_inverted":null,"expected_tx_p1":0.09678276444080844},{"code":"NL14_2W_PTCasym1","row":14,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, two-winding transformer: PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.21585181963742,-3.583579782980935]},"expected_inverted":null,"expected_tx_p1":0.09678796170626167},{"code":"NL15_2W_PTCasym1_RTC2","row":15,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, two-winding transformer: PhaseTapChangerAsymmetrical on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[103.34613848775373,-3.583579782980936]},"expected_inverted":null,"expected_tx_p1":0.09678796170628438},{"code":"NL16_3W_RTC2","row":16,"windings":3,"noload":true,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, three-winding transformer: RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[107.43152960267126,-0.001295828233961153],"B3":[20.45340877728153,-0.001295828233961208]},"expected_inverted":null,"expected_tx_p1":0.10458587482392338},{"code":"NL17_3W_PTCasym2","row":17,"windings":3,"noload":true,"taps":[{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, three-winding transformer: PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[116.94075487259848,3.580988126512421],"B3":[20.453408777281528,-0.0012958282339613023]},"expected_inverted":null,"expected_tx_p1":0.1045858748239915},{"code":"NL18_2W_RTC2","row":18,"windings":2,"noload":true,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, two-winding transformer: RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[107.43152960266873,-0.0012958282345535501]},"expected_inverted":null,"expected_tx_p1":0.10459149111886384},{"code":"NL19_2W_PTClin2","row":19,"windings":2,"noload":true,"taps":[{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, two-winding transformer: PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[112.49374827504575,4.4987041717654455]},"expected_inverted":{"B1":[225.0,0.0],"B2":[112.49374827504575,-4.501295828234555]},"expected_tx_p1":0.10459149111890927},{"code":"NL20_2W_PTCasym2","row":20,"windings":2,"noload":true,"taps":[{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, two-winding transformer: PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[116.94075487259572,3.5809881265118304]},"expected_inverted":null,"expected_tx_p1":0.10459149111880707},{"code":"NL21_2W_PTCtab2","row":21,"windings":2,"noload":true,"taps":[{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, two-winding transformer: PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[113.61868575779627,5.498704171765446]},"expected_inverted":{"B1":[225.0,0.0],"B2":[111.37994878717406,-5.501295828234552]},"expected_tx_p1":0.10459149111886384},{"code":"NL22_2W_PTCsym2","row":22,"windings":2,"noload":true,"taps":[{"end":2,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"No load, two-winding transformer: PhaseTapChangerSymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[112.49374827504582,-3.6669748401186713]},"expected_inverted":null,"expected_tx_p1":0.10459149111881844},{"code":"NL23_3W_PTCtab2","row":23,"windings":3,"noload":true,"taps":[{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, three-winding transformer: PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[113.61868575779889,5.498704171766036],"B3":[20.45340877728153,-0.0012958282339626407]},"expected_inverted":{"B1":[225.0,0.0],"B2":[111.37994878717667,-5.5012958282339595],"B3":[20.45340877728153,-0.0012958282339611724]},"expected_tx_p1":0.10458587482403692},{"code":"NL24_2W_RTC1_PTClin1","row":24,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[108.42770918076698,-4.501295828234554]},"expected_inverted":null,"expected_tx_p1":0.09716730195393562},{"code":"NL25_2W_RTC2_PTClin2","row":25,"windings":2,"noload":true,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, two-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[107.4315296026687,4.498704171765446]},"expected_inverted":{"B1":[225.0,0.0],"B2":[107.43152960266868,-4.501295828234555]},"expected_tx_p1":0.10459149111890927},{"code":"NL26_2W_RTC1_PTCsym1","row":26,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerSymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.42770918076705,3.6643831836495635]},"expected_inverted":null,"expected_tx_p1":0.09716730195396968},{"code":"NL27_2W_RTC1_PTCasym1","row":27,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[104.30443548880716,-3.583579782980937]},"expected_inverted":null,"expected_tx_p1":0.08991768833218225},{"code":"NL28_2W_RTC1_PTCtab1","row":28,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[107.35416750570992,-5.501295828234552]},"expected_inverted":null,"expected_tx_p1":0.09525272223689109},{"code":"NL29_3W_RTC1_PTClin1","row":29,"windings":3,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, three-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[108.42770918076955,-4.501295828233963],"B3":[19.7141289419581,-4.501295828233963]},"expected_inverted":null,"expected_tx_p1":0.09716208431905464},{"code":"NL30_3W_RTC2_PTClin2","row":30,"windings":3,"noload":true,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, three-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[107.43152960267128,4.498704171766056],"B3":[20.45340877728154,-0.001295828233961902]},"expected_inverted":{"B1":[225.0,0.0],"B2":[107.43152960267132,-4.501295828233977],"B3":[20.453408777281542,-0.0012958282339609567]},"expected_tx_p1":0.10458587482396879},{"code":"NL31_2W_PTClin1_RTC2","row":31,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, two-winding transformer: PhaseTapChangerLinear on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[107.43152960266872,-4.501295828234554]},"expected_inverted":null,"expected_tx_p1":0.10459149111888655},{"code":"NL32_2W_RTC2_PTCasym2","row":32,"windings":2,"noload":true,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, two-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[111.67842090332897,3.580988126511827]},"expected_inverted":null,"expected_tx_p1":0.10459149111890927}];
 
 
-const KVEND = { 1: 220, 2: 110, 3: 20 };
+const KVEND = { 1: 220, 2: 110, 3: 20 };       // rated kV of each transformer end
+// default data of a newly added tap changer = the data of the test cases (RTC data depend on the end)
 const DEF = {
   RTC: { 1: { low: 1, high: 21, neutral: 11, step: 14, svi: 1.25 }, 2: { low: 1, high: 17, neutral: 9, step: 6, svi: 1.5 }, 3: { low: 1, high: 5, neutral: 3, step: 5, svi: 2.5 } },
   PTClin: { low: 1, high: 25, neutral: 13, step: 16, deg: 1.5 },
@@ -767,10 +985,12 @@ const DEF = {
   PTCasym: { low: 1, high: 25, neutral: 13, step: 18, vsi: 1.5, theta: 60 },
   PTCtab: { low: 1, high: 13, neutral: 7, step: 9, table: [[1,-24,0.96],[2,-18.5,0.97],[3,-13.5,0.979],[4,-9,0.987],[5,-5.5,0.993],[6,-2.5,0.997],[7,0,1],[8,2.5,1.004],[9,5.5,1.01],[10,9,1.017],[11,13.5,1.025],[12,18.5,1.034],[13,24,1.044]].map(([step, angle, ratio]) => ({ step, angle, ratio })) },
 };
+/** Short form of document.getElementById. */
 const $ = (id) => document.getElementById(id);
-let presets = [];
-let model = defaultModel(2);
+let presets = [];               // content of presets.json (the 64 test cases)
+let model = defaultModel(2);    // the current input data (see defaultModel in solver.mjs); changed by every input
 
+/** A new tap changer of the given type ("RTC", "PTClin", ...) on end 1-3 with the default data (a copy). */
 function defaultTap(type, end) {
   const d = type === "RTC" ? DEF.RTC[end] : DEF[type];
   return { end, type, ...structuredClone(d) };
@@ -778,9 +998,17 @@ function defaultTap(type, end) {
 
 // ---------------------------------------------------------------- controls
 const PHASE = ["PTClin", "PTCsym", "PTCasym", "PTCtab"];
+/** "r" for a ratio tap changer, "p" for a phase tap changer. */
 const slotOf = (t) => (t.type === "RTC" ? "r" : "p");
+/** The tap changer of end e in slot "r" or "p", or undefined. */
 const findTap = (e, slot) => model.taps.find((t) => t.end === e && slotOf(t) === slot);
 
+/**
+ * HTML of the input controls of one slot: type selector, step slider, data fields, formula read-out and the
+ * automatic-control settings. Every input carries data-e (end), data-s (slot) and data-f (field) for onEnd().
+ * @param {number} e end 1-3. @param {string} slot "r" or "p". @param {object|undefined} tc the tap changer or none.
+ * @returns {string} HTML text.
+ */
 function slotHtml(e, slot, tc) {
   const opts = slot === "r" ? ["none", "RTC"] : ["none", ...PHASE];
   const sel = opts.map((k) => `<option value="${k}"${(tc ? tc.type : "none") === k ? " selected" : ""}>${k === "none" ? (slot === "r" ? "no ratio tap changer" : "no phase tap changer") : TAP_TYPES[k]}</option>`).join("");
@@ -808,6 +1036,7 @@ function slotHtml(e, slot, tc) {
   return h;
 }
 
+/** Rebuild the per-end input panels from the model and attach onEnd() to every input (DOM side effect). */
 function renderEnds() {
   const box = $("ends");
   box.innerHTML = "";
@@ -822,6 +1051,11 @@ function renderEnds() {
   box.querySelectorAll("input[type=number]").forEach((el) => el.addEventListener("input", onEnd));
 }
 
+/**
+ * Event handler of all per-end inputs: change the model (type, step, data, control settings) and run again.
+ * Any manual change clears the preset selector ("custom").
+ * @param {Event} ev the input / change event; ev.target.dataset tells end, slot and field.
+ */
 function onEnd(ev) {
   const e = +ev.target.dataset.e, slot = ev.target.dataset.s, f = ev.target.dataset.f;
   const tc = findTap(e, slot);
@@ -844,11 +1078,13 @@ function onEnd(ev) {
   if (f === "ctarget") { tc.control.target = ev.target.value; run(); return; }
   if (f === "cvalue") { tc.control.value = +ev.target.value; run(); return; }
   if (f === "cdb") { tc.control.deadband = +ev.target.value; run(); return; }
-  tc[f] = +ev.target.value;
+  tc[f] = +ev.target.value;            // a plain number field: step, low, high, neutral, svi, deg, vsi, theta
+  // keep the step inside the (new) range
   if (f === "low" || f === "high") { tc.step = Math.min(Math.max(tc.step, tc.low), tc.high); renderEnds(); }
   run();
 }
 
+/** Input fields for the transformer nameplate data (2W: S, uk, ur, i0, p0; 3W: three S and pair values). */
 function renderTxData() {
   const t = model.windings === 2 ? model.tx2 : model.tx3;
   const f = model.windings === 2 ? [["S", "S MVA"], ["uk", "uk %"], ["ur", "ur %"], ["i0", "i0 %"], ["p0", "p0 %"]]
@@ -865,6 +1101,7 @@ function renderTxData() {
   }));
 }
 
+/** Copy the network settings of the model (no load, TP, source voltage, loads, end-2 rule, windings) to the inputs. */
 function syncNetwork() {
   $("noload").checked = model.noLoad;
   $("tp").checked = model.tp.on;
@@ -876,9 +1113,12 @@ function syncNetwork() {
   document.querySelectorAll("#wseg button").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.w === model.windings)));
 }
 
+/** Replace the whole model, redraw all inputs and solve. */
 function setModel(m) { model = m; syncNetwork(); renderEnds(); renderTxData(); run(); }
 
+/** Simulator model of one preset (see presetModel in explain.mjs). */
 function presetModel(p) { return presetModelOf(p, defaultModel); }
+/** Open the preset with this case code; returns false when there is none. */
 function openPreset(code) {
   const p = presets.find((x) => x.code === code);
   if (!p) return false;
@@ -891,6 +1131,11 @@ function openPreset(code) {
 const f1 = (x, n = 1) => (x >= 0 ? "+" : "") + x.toFixed(n);
 const marker = (id, cls) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="${cls}"/></marker>`;
 
+/**
+ * Single-line diagram of the solved model as SVG: buses with voltages, TX with tap-changer arrows and labels,
+ * TP, grid infeed, loads and the power flows (arrow down = power flowing into the equipment).
+ * @param {object} r result of solveWithControl(). @returns {string} SVG text (coordinates in pixels).
+ */
 function sldSvg(r) {
   const w = model.windings, b = r.buses, fl = r.flows;
   const tp = model.tp.on && !model.noLoad;
@@ -929,7 +1174,12 @@ function sldSvg(r) {
   return `<svg viewBox="0 0 600 ${H}" role="img" aria-label="Single-line diagram">${out.join("")}</svg>`;
 }
 
-const CIRC = "12345";
+const CIRC = "12345";                // step labels: 1-3 = tap changers on end 1-3, 4/5 = network part of B2/B3
+/**
+ * Phasor chain: the voltage of B2 (and B3) as arrows in the complex plane, one arrow per tap changer and one for
+ * the network, zoomed so that the tips fill the picture (see chains() in solver.mjs).
+ * @param {object[]} chains r.chains. @returns {string} SVG text.
+ */
 function phasorSvg(chains) {
   const pts = [chains[0].start, ...chains.flatMap((c) => c.steps.map((s) => s.b))];
   const W = 600, H = 300;
@@ -949,6 +1199,7 @@ function phasorSvg(chains) {
     if (seen.has(key)) return;
     seen.add(key);
     if (s.kind !== "net") {
+      // dashed legs: first stretch the arrow to the new length (magnitude part), then turn it (angle part)
       const rad = mul(s.a, C(abs(s.b) / abs(s.a)));
       out.push(`<line x1="${X(s.a)}" y1="${Y(s.a)}" x2="${X(rad)}" y2="${Y(rad)}" class="leg"/><line x1="${X(rad)}" y1="${Y(rad)}" x2="${X(s.b)}" y2="${Y(s.b)}" class="leg"/>`);
     }
@@ -965,6 +1216,11 @@ function phasorSvg(chains) {
   return `<svg viewBox="0 0 ${W} ${H + 38}" role="img" aria-label="Phasor chain">${out.join("")}</svg>`;
 }
 
+/**
+ * Waterfall chart: one row per step with two bars, the change of |V| (in % of nominal and kV) and of the angle
+ * (degrees), from the start value V1 * U/U1 to the solved bus voltage.
+ * @param {object[]} chains r.chains. @returns {string} SVG text.
+ */
 function waterfallSvg(chains) {
   const rows = [];
   chains.forEach((c) => {
@@ -996,6 +1252,11 @@ function waterfallSvg(chains) {
 }
 
 // ---------------------------------------------------------------- run
+/**
+ * Solve the current model (with automatic control) and fill every result panel. Called after each input change.
+ * On a solver error (e.g. singular Jacobian) it shows the message and stops. Side effects: DOM updates; may move
+ * tap steps (automatic control); stores the model in localStorage.
+ */
 function run() {
     let r;
   try { r = solveWithControl(model); } catch (err) { $("status").className = "status bad"; $("status").textContent = "No solution: " + err.message; $("explain").textContent = "No load-flow solution, so no explanation."; return; }
@@ -1031,10 +1292,12 @@ function run() {
   $("tflow").innerHTML = `<table><thead><tr><th>Terminal</th><th>P MW</th><th>Q Mvar</th></tr></thead><tbody>` +
     Object.entries(r.flows).map(([n, f]) => `<tr><td>${n}</td><td>${f.p.toFixed(3)}</td><td>${f.q.toFixed(3)}</td></tr>`).join("") +
     `</tbody></table><p class="hint">Load sign convention: positive = from the bus into the equipment.</p>`;
+  // NOTE (2026-10-12 review): the model is saved here but never read back (no localStorage.getItem in the page).
   try { localStorage.setItem("tapsim", JSON.stringify(model)); } catch (e) { /* storage blocked: fine */ }
 }
 
 // ---------------------------------------------------------------- wiring
+// Event handlers of the inputs outside the per-end panels. Switching 2W <-> 3W keeps the tap changers that still fit.
 document.querySelectorAll("#wseg button").forEach((b) => b.addEventListener("click", () => {
   const w = +b.dataset.w;
   if (w === model.windings) return;
@@ -1059,6 +1322,8 @@ $("rule").addEventListener("change", (ev) => { model.end2Rule = ev.target.value;
 $("preset").addEventListener("change", (ev) => { openPreset(ev.target.value); });
 if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("hashchange", () => openPreset(decodeURIComponent(location.hash.slice(1))));
 
+// Start-up: load the presets, fill the selector, open the case named in the URL (#CODE) or TC08 by default.
+// If presets.json cannot be loaded (e.g. the page was opened from disk), start with a custom model.
 const sel = $("preset");
 Promise.resolve(PRESETS_INLINE).then((list) => {
   presets = list;

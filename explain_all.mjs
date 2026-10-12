@@ -1,13 +1,19 @@
 // Writes EXPLANATIONS.md and explanations.html: the explanation of each of the 32 tap-changer configurations, with
 // both cases of its pair (TCnn with load, NLnn no load). Usage: node explain_all.mjs
+//
+// For beginners: for each configuration row 1..32 it explains the loaded case and the no-load case, keeps the
+// sections of the loaded case and adds the no-load "network" section next to the loaded one. The HTML page reuses
+// the stylesheet of index.html. Side effects: overwrites EXPLANATIONS.md and explanations.html in this folder.
 import { readFileSync, writeFileSync } from "node:fs";
 import { defaultModel, solveWithControl } from "./solver.mjs";
 import { explain, presetModel, renderHtml, renderMarkdown } from "./explain.mjs";
 
 const presets = JSON.parse(readFileSync(new URL("./presets.json", import.meta.url)));
 const rows = [...new Set(presets.map((p) => p.row))].sort((a, b) => a - b);
+/** Short title of a preset: "2W: RatioTapChanger on end 1 ...". */
 const short = (p) => `${p.windings}W: ` + p.title.replace(/^.*?: /, "");
 
+/** The merged explanation of one configuration row: { tc, nl, ex }. */
 function pairExplanation(row) {
   const tc = presets.find((p) => p.row === row && !p.noload);
   const nl = presets.find((p) => p.row === row && p.noload);
@@ -27,6 +33,7 @@ function pairExplanation(row) {
 }
 
 const all = rows.map(pairExplanation);
+/** Anchor id of a row in the documents: 8 -> "c08". */
 const anchor = (row) => `c${String(row).padStart(2, "0")}`;
 const intro = "Each of the 32 configurations is one combination of tap changers on a two- or three-winding transformer. "
   + "It comes as a pair: the loaded case TCnn (TX in parallel with a plain transformer TP, feeding a load) and the no-load "
