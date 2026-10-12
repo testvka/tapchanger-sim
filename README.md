@@ -27,6 +27,9 @@ Open `standalone.html` directly in a browser. `index.html` is the same page as s
 (`python3 -m http.server` in this folder, then http://localhost:8000/), because browsers load JavaScript modules and
 `presets.json` only over http.
 
+New to power systems or to this code? Start with [docs/beginner/README.md](docs/beginner/README.md): the physics with
+worked examples, a tour of the files, how one calculation runs, how to test and change it.
+
 Files:
 - `solver.mjs`: load flow with complex tap ratios (each tap changer is an ideal transformer at its end's terminal,
   v_terminal = t · v_internal; polar Newton-Raphson). Same model as the reference solver that computed the SVs of the
