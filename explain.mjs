@@ -1,24 +1,47 @@
 // Explanation of a tap-changer combination: what each tap changer does, how they combine, what the network makes of
 // it, and the matching pair of example cases (loaded TCnn / no load NLnn). Used by index.html (live, for the current
 // model) and by explain_all.mjs (EXPLANATIONS.md and explanations.html for all 32 configurations).
+//
+// For beginners: explain(model, result) builds the explanation as data (sections with paragraphs, list items, a
+// table and buttons); renderHtml() / renderMarkdown() turn that data into HTML or Markdown. Every sentence is a
+// template filled with numbers of the current load flow, so the text always matches what the page shows.
+// Main steps of explain(): describe the combination -> tapItem() per tap changer (formula, kind, end) ->
+// interaction() (how ends combine: only t_k / t_1 matters between buses) -> network() (what load and the parallel
+// TP make of it, compared with the same network without tap changers) -> the pair table (TCnn / NLnn) ->
+// reading() (what a program reading such a case must get right).
+// Read first: explain(), network(), interaction(), renderHtml().
+// Words: t = complex tap factor ratio * e^(j angle); TX / TP = transformer under test / plain parallel transformer;
+// TC / NL = loaded / no-load case; RTC / PTC = ratio / phase tap changer; n = step - neutral; du = voltage step.
+// Do not change the text templates lightly: EXPLANATIONS.md and explanations.html are generated from them and
+// test_explain.mjs checks parts of the wording (e.g. the pair heading).
 import { solve, solveWithControl, tapValue, TAP_TYPES, abs, arg, div } from "./solver.mjs";
 
-const KVE = { 1: 220, 2: 110, 3: 20 };
-const DEG = 180 / Math.PI;
+const KVE = { 1: 220, 2: 110, 3: 20 };    // rated kV per end
+const DEG = 180 / Math.PI;                // radians -> degrees
+/** x, or 0 when it would print as -0.000 with n decimals. */
 const z = (x, n) => (Math.abs(x) < 0.5 * 10 ** -n ? 0 : x);                // no "-0.000"
+/** Fixed-point text with n decimals, e.g. fx(1.23456) = "1.235". */
 const fx = (x, n = 3) => z(x, n).toFixed(n);
+/** Same with a sign, e.g. sg(4.5) = "+4.500". */
 const sg = (x, n = 3) => (z(x, n) >= 0 ? "+" : "") + z(x, n).toFixed(n);
+/** Angle in degrees wrapped to -180 .. +180. */
 const wrap = (d) => ((d + 540) % 360) - 180;
+/** English list: ["a"] -> "a", ["a","b"] -> "a and b", ["a","b","c"] -> "a, b and c". */
 const lst = (a) => (a.length < 3 ? a.join(" and ") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1]);
+/** Sort order of tap changers: by end, ratio tap changer first. */
 const order = (a, b) => a.end - b.end || (a.type === "RTC" ? -1 : 1);
+/** True for a phase tap changer (any type except RTC). */
 const isPhase = (t) => t.type !== "RTC";
 
-/** Configuration key: windings + tap changer types per end (steps and data do not count). */
+/** Configuration key: windings + tap changer types per end (steps and data do not count).
+ * Example: configKey(2, [{ end: 2, type: "PTClin" }, { end: 1, type: "RTC" }]) = "2W:1RTC+2PTClin". */
 export function configKey(windings, taps) {
   return `${windings}W:` + taps.map((t) => `${t.end}${t.type}`).sort().join("+");
 }
 
-/** The model of an example case, as the page loads it. */
+/** The model of an example case, as the page loads it.
+ * @param {object} p one entry of presets.json. @param {Function} defaultModel from solver.mjs (passed in, so this
+ * file needs only what it imports). @returns {object} model; no-load cases get i0 0.10 %, p0 0.04 %. */
 export function presetModel(p, defaultModel) {
   const m = defaultModel(p.windings);
   m.noLoad = p.noload;
@@ -27,7 +50,8 @@ export function presetModel(p, defaultModel) {
   return m;
 }
 
-/** The pair of example cases (loaded TC, no load NL) with the same combination, or null. */
+/** The pair of example cases (loaded TC, no load NL) with the same combination, or null.
+ * @returns {{row:number, tc:object|undefined, nl:object|undefined}|null} */
 export function findPair(model, presets) {
   const key = configKey(model.windings, model.taps);
   const tc = presets.find((p) => !p.noload && configKey(p.windings, p.taps) === key);
@@ -35,6 +59,7 @@ export function findPair(model, presets) {
   return tc || nl ? { row: (tc || nl).row, tc, nl } : null;
 }
 
+/** The model as a JSON string without control settings and helper flags, to compare two models. */
 function normalized(m) {
   const c = structuredClone(m);
   for (const t of [c.tx2, c.tx3]) delete t.autoMag;
@@ -42,6 +67,7 @@ function normalized(m) {
   return JSON.stringify(c);
 }
 
+/** How much one tap changer moves each bus: [{ bus, dv (kV), da (degrees) }] from the result's chains. */
 function contributions(r, tc) {
   const label = `${tc.type} end ${tc.end}`;
   const out = [];
@@ -54,6 +80,7 @@ function contributions(r, tc) {
   return out;
 }
 
+// one sentence per tap-changer type: what it does and its formula
 const KIND = {
   RTC: "A ratio tap changer scales the winding voltage in phase: t = 1 + n · stepVoltageIncrement / 100 with n = step − neutral; the angle stays 0°.",
   PTClin: "A linear phase tap changer turns the voltage by n · stepPhaseShiftIncrement and leaves the magnitude at 1. CGMES describes it only by the angle per step, not by a winding design.",
@@ -62,6 +89,7 @@ const KIND = {
   PTCtab: "A tabular phase tap changer takes angle and ratio of every step from its table. The points need not be equidistant, so no formula converts a step into an angle.",
 };
 
+/** One sentence on what the end of a tap changer means (end 1 divides, end 2 / 3 multiply). w = windings. */
 function place(tc, w) {
   const e = tc.end;
   const what = tc.type === "RTC" ? "a ratio above 1 lowers it"
@@ -78,6 +106,7 @@ function place(tc, w) {
     + (isPhase(tc) ? " B3 is fed only through TX, so the phase shift turns B3's angle but cannot steer any power." : "");
 }
 
+/** The full list item for one tap changer: formula with numbers, kind, end and its effect in this load flow. */
 function tapItem(model, r, tc) {
   const v = tapValue(tc, model.end2Rule);
   const head = `${TAP_TYPES[tc.type]} on end ${tc.end} (${KVE[tc.end]} kV), step ${tc.step} (neutral ${tc.neutral}): ${v.formula}.`;
@@ -90,6 +119,7 @@ function tapItem(model, r, tc) {
   return head + inv + " " + KIND[tc.type] + extra + " " + place(tc, model.windings) + here;
 }
 
+/** Effective ratio from B1 to each other bus as text: "B1 → B2: t2 / t1 = 0.96386 at +0.000°". */
 function pathText(model, r) {
   const t1 = r.tEnd[1];
   const out = [];
@@ -100,6 +130,7 @@ function pathText(model, r) {
   return out;
 }
 
+/** Paragraphs on how the tap changers combine (product per end, end 1 against the others, three-winding paths). */
 function interaction(model, r) {
   const taps = model.taps;
   const paras = [];
@@ -123,6 +154,11 @@ function interaction(model, r) {
   return paras;
 }
 
+/**
+ * What the network makes of the tap changers: at no load the open-circuit voltages; with load and TP the
+ * circulating flow, found by solving the same model once more without tap changers and taking the difference.
+ * @returns {{title:string, paras:string[]}}
+ */
 function network(model, r) {
   const w = model.windings;
   const f = r.flows;
@@ -165,6 +201,7 @@ function network(model, r) {
   return { title: "With load and parallel TP", paras };
 }
 
+/** List items: the typical mistakes a program reading this case can make, with the numbers of this case. */
 function reading(model, r) {
   const items = [];
   const w = model.windings;
@@ -177,6 +214,7 @@ function reading(model, r) {
     if (tc.type === "PTCasym") items.push(`Asymmetrical: keep the in-phase part of the booster: ratio ${fx(v.ratio, 5)} (not 1) with ${sg(v.angle)}°.`);
     if (tc.type === "PTCtab") items.push(`Tabular: take point ${tc.step} of the table (${sg(v.angle, 1)}°, ratio ${fx(v.ratio, 3)}); do not interpolate a linear law.`);
     if ((tc.type === "PTClin" || tc.type === "PTCtab") && tc.end > 1) {
+      // solve once more with the other end-2 reading, to show what the wrong sign would give
       const alt = structuredClone(model);
       alt.end2Rule = model.end2Rule === "invert" ? "keep" : "invert";
       let ra = null;
@@ -196,6 +234,11 @@ function reading(model, r) {
 /**
  * Explanation of the current model and its load-flow result r (solveWithControl). Returns
  * { key, pair, sections: [{ id, title, paras?, items?, table?, actions? }] } with plain-text strings.
+ * @param {object} model the simulator model (see defaultModel in solver.mjs).
+ * @param {object} r its result from solveWithControl().
+ * @param {object[]} presets presets.json (to find the matching pair of example cases); [] = no pair section.
+ * @param {Function|null} defaultModel from solver.mjs; needed to tell whether the user changed the preset.
+ * @throws {Error} only if solve() throws for the comparison model without tap changers.
  */
 export function explain(model, r, presets = [], defaultModel = null) {
   const w = model.windings;
@@ -252,9 +295,11 @@ export function explain(model, r, presets = [], defaultModel = null) {
   return { key: configKey(w, model.taps), pair, sections };
 }
 
+/** Escape text for HTML (&, <, >, "). */
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-/** HTML for the page; actions become buttons (live page) or links to the simulator (static page). */
+/** HTML for the page; actions become buttons (live page) or links to the simulator (static page).
+ * @param {object} ex result of explain(). @param {{links?:boolean}} opts links: true for explanations.html. */
 export function renderHtml(ex, { links = false } = {}) {
   return ex.sections.map((s) => {
     let h = `<h3>${esc(s.title)}</h3>`;
@@ -273,7 +318,7 @@ export function renderHtml(ex, { links = false } = {}) {
   }).join("");
 }
 
-/** Markdown for EXPLANATIONS.md. */
+/** Markdown for EXPLANATIONS.md. @param {object} ex result of explain(). @param {number} level heading level. */
 export function renderMarkdown(ex, level = 3) {
   const hh = "#".repeat(level);
   return ex.sections.map((s) => {

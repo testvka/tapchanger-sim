@@ -1,15 +1,24 @@
 // Checks explain.mjs: every preset (both readings, with and without TP) gets a complete explanation with its pair and
 // the pair's stored results; the physics the text states holds for the presets; 2,000 random combinations explain
 // without errors. Usage: node test_explain.mjs
+//
+// For beginners: three parts. (1) every preset in both readings, with and without TP: the text is complete, finds
+// its pair and shows the stored B2 voltage. (2) the physics the text claims: at no load V_k = V_B1 * (U_k / 220) *
+// |t_k / t_1| and the angle of t_k / t_1; with load a pure phase shift changes the TX active power in the direction
+// of its angle, a pure ratio change mostly the reactive power. (3) 2,000 random models from a fixed seed (the same
+// models on every run) must be explained without an error. Exit code 1 when any check failed.
 import { readFileSync } from "node:fs";
 import { defaultModel, solveWithControl, abs, arg, div } from "./solver.mjs";
 import { explain, presetModel, renderHtml, renderMarkdown, configKey } from "./explain.mjs";
 
 const presets = JSON.parse(readFileSync(new URL("./presets.json", import.meta.url)));
 let fails = 0, n = 0;
+/** Count and print one failure. */
 const fail = (msg) => { fails++; console.log("FAIL", msg); };
+/** True if a text shows a broken number (NaN, undefined, Infinity, null). */
 const bad = (s) => /NaN|undefined|Infinity|null/.test(s);
 
+/** Solve, explain and render one model; record failures. Returns { r, ex }. Throws if the solver throws. */
 function check(model, label) {
   const r = solveWithControl(model);
   const ex = explain(model, r, presets, defaultModel);
@@ -72,7 +81,9 @@ const tab = presets.find((p) => p.taps.some((t) => t.type === "PTCtab")).taps.fi
 const proto = { RTC: { low: 1, high: 21, neutral: 11, svi: 1.25 }, PTClin: { low: 1, high: 25, neutral: 13, deg: 1.5 },
   PTCsym: { low: 1, high: 25, neutral: 13, vsi: 1.6 }, PTCasym: { low: 1, high: 25, neutral: 13, vsi: 1.5, theta: 60 }, PTCtab: tab };
 let seed = 12345;
+/** Tiny pseudo-random generator (linear congruential), so every run tests the same 2,000 models. Returns 0..1. */
 const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+/** A random element of array a. */
 const pick = (a) => a[Math.floor(rnd() * a.length)];
 let nr = 0, nosol = 0, keys = new Set();
 for (let i = 0; i < 2000; i++) {

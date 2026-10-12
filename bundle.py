@@ -1,6 +1,14 @@
 """Single-file simulator: standalone.html = index.html with solver.mjs, explain.mjs and presets.json inlined (no module
 import, no fetch). It runs where the multi-file page cannot: opened from disk (file://) or from a server that does
 not serve .mjs as JavaScript.  Usage: python3 bundle.py
+
+For beginners: a browser loads JavaScript modules (import ... from "./solver.mjs") and fetches JSON only over
+http, not from a file opened from disk. This script pastes solver.mjs and explain.mjs into the page, each inside
+its own function (so their private names cannot clash), drops the "export" keywords, and replaces the fetch of
+presets.json by the JSON text. Every assumption about the source files is checked with assert: an AssertionError
+means a module now uses a form this script does not understand (e.g. "export default" or a second import line).
+Run it after every change to index.html, solver.mjs, explain.mjs or presets.json; it overwrites standalone.html.
+Read first: main(), module(), imports().
 """
 import json
 import os
@@ -10,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def read(name):
+    """Text of a file in this folder."""
     return open(os.path.join(HERE, name), encoding="utf-8").read()
 
 
@@ -21,7 +30,12 @@ def safe(text: str) -> str:
 
 
 def module(src: str, name: str):
-    """Exported names and the body of a module without its export keywords."""
+    """Exported names and the body of a module without its export keywords.
+
+    Example: "export const C = ..." gives the name "C" and the line "const C = ...". Raises AssertionError if an
+    "export " is left that is not at the start of a line (outside // comments). Careful: the word "export" followed
+    by a space inside a /* ... */ comment also trips this check, so JSDoc comments must not contain it.
+    """
     names = re.findall(r"^export (?:const|let|function|class) (\w+)", src, re.M)
     body = re.sub(r"^export ", "", src, flags=re.M)
     assert "export " not in re.sub(r"//.*", "", body), f"unhandled export form in {name}"
@@ -29,13 +43,18 @@ def module(src: str, name: str):
 
 
 def imports(src: str, name: str):
-    """The names one import line takes from ./<name>, and that line."""
+    """The names one import line takes from ./<name>, and that line.
+
+    Example: 'import { solve, C } from "./solver.mjs";' gives (["solve", "C"], that line). Raises AssertionError if
+    there is no such line.
+    """
     m = re.search(r'^import \{([^}]*)\} from "\./' + re.escape(name) + r'";$', src, re.M)
     assert m, f"import line of {name} not found"
     return [n.strip() for n in m.group(1).split(",") if n.strip()], m.group(0)
 
 
 def main():
+    """Build standalone.html (see the module docstring)."""
     html, solver, expl = read("index.html"), read("solver.mjs"), read("explain.mjs")
     presets = json.load(open(os.path.join(HERE, "presets.json"), encoding="utf-8"))
     assert not re.search(r"^\s*import\b", solver, re.M), "solver.mjs imports other modules"
@@ -46,6 +65,7 @@ def main():
     assert not re.search(r"^\s*import\b", e_body, re.M), "explain.mjs has a second import"
     h_solver, h_solver_line = imports(html, "solver.mjs")
     h_expl, h_expl_line = imports(html, "explain.mjs")
+    # "presetModel as presetModelOf" -> {"presetModel": "presetModelOf"}; a plain name maps to None
     alias = dict(re.match(r"(\w+)(?:\s+as\s+(\w+))?$", n).groups() for n in h_expl)
     assert all(n in s_names for n in h_solver), set(h_solver) - set(s_names)
     assert all(n in e_names for n in alias), set(alias) - set(e_names)
