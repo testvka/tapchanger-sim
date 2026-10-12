@@ -268,7 +268,9 @@ function openPreset(code) {
 }
 
 // ---------------------------------------------------------------- drawing
+/** Number with sign and n decimals: f1(4.5) = "+4.5". */
 const f1 = (x, n = 1) => (x >= 0 ? "+" : "") + x.toFixed(n);
+/** SVG arrow-head marker definition with the given id and CSS class (colour). */
 const marker = (id, cls) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="${cls}"/></marker>`;
 
 /**
@@ -280,10 +282,14 @@ function sldSvg(r) {
   const w = model.windings, b = r.buses, fl = r.flows;
   const tp = model.tp.on && !model.noLoad;
   const yB2 = w === 2 ? 234 : 262, H = w === 2 ? 300 : 322, tpX = w === 2 ? 440 : 500, gX = w === 2 ? 510 : 560, ldX = w === 2 ? 520 : 545;
+  // the solved tap changers of end e
   const tapAt = (e) => r.taps.filter((t) => t.end === e);
   const out = [`<defs>${marker("am-rt", "mk-rt")}${marker("am-ph", "mk-ph")}${marker("am-ink", "mk-ink")}</defs>`];
+  // voltage label of bus n: "110.674 kV, 1.00613 pu"
   const vtxt = (n) => `${b[n].vKv.toFixed(3)} kV, ${b[n].vPu.toFixed(4)} pu`;
+  // two text lines with P (arrow down = into the equipment) and Q of a flow, at pixel position x, y
   const flowTxt = (x, y, f) => f ? `<text x="${x}" y="${y}">${f.p >= 0 ? "↓" : "↑"} ${Math.abs(f.p).toFixed(model.noLoad ? 3 : 1)} MW</text><text x="${x}" y="${y + 13}">${f1(f.q, model.noLoad ? 3 : 1)} Mvar</text>` : "";
+  // tap-changer arrow through the winding circle at (cx, cy) plus one label line per tap changer t of that end
   const tapMark = (cx, cy, rr, t, lx, ly, anchor) => {
     if (!t.length) return "";
     const c = t.some((x) => x.type !== "RTC") ? "ph" : "rt";
@@ -326,6 +332,7 @@ function phasorSvg(chains) {
   const xs = pts.map((p) => p.re), ys = [...pts.map((p) => p.im), 0];
   const S = Math.min((W - 240) / Math.max(Math.max(...xs) - Math.min(...xs), 0.01), (H - 80) / Math.max(Math.max(...ys) - Math.min(...ys), 0.01));
   const cx = (Math.max(...xs) + Math.min(...xs)) / 2, cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+  // complex pu value -> SVG pixel coordinates (centred, scaled by S, y axis pointing up)
   const X = (z) => 270 + (z.re - cx) * S, Y = (z) => 150 - (z.im - cy) * S;
   const o = C(0);
   const out = [`<defs>${marker("pm-rt", "mk-rt")}${marker("pm-ph", "mk-ph")}${marker("pm-net", "mk-net")}<clipPath id="pc"><rect width="${W}" height="${H}"/></clipPath></defs><g clip-path="url(#pc)">`,
@@ -368,12 +375,14 @@ function waterfallSvg(chains) {
     c.steps.forEach((s) => rows.push({ t: "step", kind: s.kind, label: `${s.mark} ${s.label}`, a: s.a, b: s.b, kv: c.kv }));
     rows.push({ t: "end", label: `${c.bus} solved`, a: c.steps.at(-1).b, kv: c.kv });
   });
+  // magnitude in % of nominal and angle in degrees of a complex pu value
   const pct = (z) => abs(z) * 100, dg = (z) => arg(z) * 180 / Math.PI;
   const mv = rows.flatMap((r) => r.b ? [pct(r.a), pct(r.b)] : [pct(r.a)]);
   const av = [...rows.flatMap((r) => r.b ? [dg(r.a), dg(r.b)] : [dg(r.a)]), 0];
   let lo = Math.min(...mv), hi = Math.max(...mv); const pad = Math.max((hi - lo) * 0.08, 0.5); lo -= pad; hi += pad;
   let alo = Math.min(...av), ahi = Math.max(...av); const apad = Math.max((ahi - alo) * 0.08, 0.5); alo -= apad; ahi += apad;
   const x0m = 210, x1m = 350, x0a = 420, x1a = 560, rh = 20, H = 46 + rh * rows.length;
+  // value -> x pixel of the magnitude bars (M) and of the angle bars (A)
   const M = (v) => x0m + (v - lo) / (hi - lo) * (x1m - x0m), A = (v) => x0a + (v - alo) / (ahi - alo) * (x1a - x0a);
   const out = [`<text x="${x0m}" y="16" class="pl">|V| in % of nominal</text><text x="${x0a}" y="16" class="pl">angle (°)</text><line x1="${A(0)}" y1="24" x2="${A(0)}" y2="${H - 18}" class="axis"/>`];
   rows.forEach((r, k) => {
