@@ -4,7 +4,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 const pageFile = process.argv[2] || "index.html";      // also: node smoke_ui.mjs standalone.html
 const html = readFileSync(new URL("./" + pageFile, import.meta.url), "utf8");
 const script = html.split('<script type="module">')[1].split("</script>")[0]
-  .replace('from "./solver.mjs"', `from "${new URL("./solver.mjs", import.meta.url).href}"`);
+  .replace('from "./solver.mjs"', `from "${new URL("./solver.mjs", import.meta.url).href}"`)
+  .replace('from "./explain.mjs"', `from "${new URL("./explain.mjs", import.meta.url).href}"`);
 const els = {}, handlers = {};
 const mk = (id) => ({ id, value: "", checked: false, hidden: false, textContent: "", className: "", dataset: {},
   _html: "", set innerHTML(v) { this._html = v; }, get innerHTML() { return this._html; },
@@ -22,7 +23,9 @@ for (const p of presets) {
   els.preset.value = p.code;
   handlers["preset:change"].forEach((fn) => fn({ target: els.preset }));
   const st = els.status.textContent, svg = els.sld.innerHTML + els.phasor.innerHTML;
-  const ok = st.startsWith("Load flow converged") && svg.includes("<svg") && !svg.includes("NaN") && !svg.includes("undefined");
+  const ex = els.explain.innerHTML;
+  const ok = st.startsWith("Load flow converged") && svg.includes("<svg") && !svg.includes("NaN") && !svg.includes("undefined")
+    && ex.includes("<h3>The pair: ") && ex.includes(p.code) && !/NaN|undefined/.test(ex);
   if (!ok) { bad++; console.log("FAIL", p.code, st.slice(0, 80)); }
 }
 for (const rule of ["invert"]) { els.rule.value = rule; handlers["rule:change"].forEach((fn) => fn({ target: els.rule })); }

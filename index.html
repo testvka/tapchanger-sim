@@ -49,6 +49,8 @@ svg .num{font-size:12px;font-weight:600} svg .pl{font-size:11px;font-weight:600}
 svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--net)} svg .tick{stroke:#111;stroke-width:1.6}
 .hint{font-size:.85rem;color:#555}
 .contrib{padding-left:1.2em} .contrib li{font-size:.85rem}
+.explain h3{margin:.9em 0 .2em} .explain h3:first-child{margin-top:0} .explain p,.explain li{font-size:.9rem}
+.explain table{margin:.3em 0 .5em} .explain .seg{margin-top:.4em}
 </style></head><body>
 <div class="wrap">
   <header>
@@ -56,7 +58,7 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
     <p>Put ratio and phase tap changers on any end of a two- or three-winding transformer, move the steps and see
       the load flow, the single-line diagram and which tap changer causes which part of the voltage change. Same model
       as the 64 CGMES 3.0 test cases (each tap changer is an ideal transformer at its terminal, v_terminal = t · v_internal);
-      the solver reproduces all their SVs to 1e-11 pu.</p>
+      the solver reproduces all their SVs to 1e-11 pu. <a href="explanations.html">All 32 combinations explained</a></p>
   </header>
   <div class="lay">
     <div class="ctrl">
@@ -94,6 +96,7 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
     </div>
     <div class="res">
       <section class="panel"><div id="status" class="status"></div><div id="sld"></div></section>
+      <section class="panel"><h2>Explanation of this combination</h2><div id="explain" class="explain"></div></section>
       <section class="panel"><h2>Which tap changer causes which part of the voltage change</h2><div id="phasor"></div><ul id="contrib" class="contrib"></ul></section>
       <section class="panel"><h2>Load flow results</h2><div class="two"><div class="scroll" id="tbus"></div><div class="scroll" id="tflow"></div></div></section>
     </div>
@@ -101,6 +104,7 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
 </div>
 <script type="module">
 import { defaultModel, solve, solveWithControl, tapValue, TAP_TYPES, abs, arg, div, mul, C } from "./solver.mjs";
+import { explain, renderHtml, presetModel as presetModelOf } from "./explain.mjs";
 
 const KVEND = { 1: 220, 2: 110, 3: 20 };
 const DEF = {
@@ -221,12 +225,13 @@ function syncNetwork() {
 
 function setModel(m) { model = m; syncNetwork(); renderEnds(); renderTxData(); run(); }
 
-function presetModel(p) {
-  const m = defaultModel(p.windings);
-  m.noLoad = p.noload;
-  if (p.noload) { m.tx2.i0 = 0.10; m.tx2.p0 = 0.04; m.tx3.i0 = 0.10; m.tx3.p0 = 0.04; }
-  m.taps = p.taps.map((t) => structuredClone(t));
-  return m;
+function presetModel(p) { return presetModelOf(p, defaultModel); }
+function openPreset(code) {
+  const p = presets.find((x) => x.code === code);
+  if (!p) return false;
+  $("preset").value = code;
+  setModel(presetModel(p));
+  return true;
 }
 
 // ---------------------------------------------------------------- drawing
@@ -340,7 +345,7 @@ function waterfallSvg(chains) {
 // ---------------------------------------------------------------- run
 function run() {
     let r;
-  try { r = solveWithControl(model); } catch (err) { $("status").className = "status bad"; $("status").textContent = "No solution: " + err.message; return; }
+  try { r = solveWithControl(model); } catch (err) { $("status").className = "status bad"; $("status").textContent = "No solution: " + err.message; $("explain").textContent = "No load-flow solution, so no explanation."; return; }
   $("status").className = "status " + (r.ok ? "ok" : "bad");
   const ctlTxt = (r.controlState || []).length ? `; controllers: ${r.controlState.map((x) => `${x.tap} ${x.status}`).join(", ")} (${r.controlLog.length} tap moves)` : "";
   $("status").textContent = r.ok ? `Load flow converged in ${r.iterations} Newton iterations (max mismatch ${r.mismatchMva.toExponential(1)} MVA)${ctlTxt}`
@@ -360,6 +365,10 @@ function run() {
     if (cs && st) cs.textContent = `${st.status} at step ${st.step}: ${st.value.toFixed(2)} (setpoint ${st.setpoint} ± ${(tc.control.deadband / 2).toFixed(2)})${tip}`;
   });
   $("sld").innerHTML = sldSvg(r);
+  try {
+    $("explain").innerHTML = renderHtml(explain(model, r, presets, defaultModel));
+    $("explain").querySelectorAll("button[data-open]").forEach((b) => b.addEventListener("click", () => openPreset(b.dataset.open)));
+  } catch (err) { $("explain").textContent = "No explanation: " + err.message; }
   $("phasor").innerHTML = phasorSvg(r.chains) + waterfallSvg(r.chains);
   $("contrib").innerHTML = r.chains.map((c) => `<li>${c.bus}: start ${(abs(c.start) * c.kv).toFixed(3)} kV; ` + c.steps.map((s) => `${s.mark} ${s.label}${s.op ? " (" + s.op + ")" : ""}: ${f1((abs(s.b) - abs(s.a)) * c.kv, 3)} kV, ${f1(((arg(s.b) - arg(s.a)) * 180 / Math.PI + 540) % 360 - 180, 3)}°`).join("; ") + `; result ${(abs(c.steps.at(-1).b) * c.kv).toFixed(3)} kV ∠ ${f1(arg(c.steps.at(-1).b) * 180 / Math.PI, 3)}°</li>`).join("");
   $("tbus").innerHTML = `<table><thead><tr><th>Bus</th><th>V kV</th><th>V pu</th><th>angle °</th></tr></thead><tbody>` +
@@ -394,15 +403,15 @@ document.querySelectorAll("#wseg button").forEach((b) => b.addEventListener("cli
 [["vs", (v) => { model.vSourceKv = v; }], ["p2", (v) => { model.loads.B2.p = v; }], ["q2", (v) => { model.loads.B2.q = v; }],
  ["p3", (v) => { model.loads.B3.p = v; }], ["q3", (v) => { model.loads.B3.q = v; }]].forEach(([id, fn]) => $(id).addEventListener("input", (ev) => { fn(+ev.target.value); $("preset").value = ""; run(); }));
 $("rule").addEventListener("change", (ev) => { model.end2Rule = ev.target.value; run(); });
-$("preset").addEventListener("change", (ev) => { const p = presets.find((x) => x.code === ev.target.value); if (p) setModel(presetModel(p)); });
+$("preset").addEventListener("change", (ev) => { openPreset(ev.target.value); });
+if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("hashchange", () => openPreset(decodeURIComponent(location.hash.slice(1))));
 
 const sel = $("preset");
 fetch("./presets.json").then((r) => r.json()).then((list) => {
   presets = list;
   sel.innerHTML = `<option value="">custom (edited)</option>` + list.map((p) => `<option value="${p.code}">${p.code} - ${p.title.replace(/^.*?: /, "")}</option>`).join("");
-  let start = presetModel(list.find((p) => p.code === "TC08_2W_RTC1_PTClin2") || list[0]);
-  sel.value = "TC08_2W_RTC1_PTClin2";
-  setModel(start);
+  const hash = typeof location !== "undefined" && location.hash ? decodeURIComponent(location.hash.slice(1)) : "";
+  if (!openPreset(hash) && !openPreset("TC08_2W_RTC1_PTClin2")) openPreset(list[0].code);
 }).catch(() => {
   const m = defaultModel(2);
   m.taps = [defaultTap("RTC", 1), defaultTap("PTClin", 2)];
