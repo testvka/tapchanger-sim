@@ -1,0 +1,154 @@
+{
+ "code": "TC08_2W_RTC1_PTClin2",
+ "row": 8,
+ "windings": 2,
+ "noload": false,
+ "title": "Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 2",
+ "description": "Row 8 of the tap-configuration list: 2 tap changer(s) on a 2-winding transformer; fixed steps, plain parallel transformer TP.",
+ "taps": [
+  {
+   "end": 1,
+   "kind": "RTC",
+   "class": "RatioTapChanger",
+   "text": "RatioTapChanger on end 1: steps 1..21, neutral 11, stepVoltageIncrement 1.25 %, step 14 -> ratio 1.0375"
+  },
+  {
+   "end": 2,
+   "kind": "PTClin",
+   "class": "PhaseTapChangerLinear",
+   "text": "PhaseTapChangerLinear on end 2: steps 1..25, neutral 13, stepPhaseShiftIncrement 1.5 deg, xMin = xMax = end 2's own PowerTransformerEnd.x = 0 ohm (the two-winding impedance sits on end 1), step 16 -> +4.5000 deg"
+  }
+ ],
+ "disputed_end2_rule": true,
+ "archives": [
+  "TC08_2W_RTC1_PTClin2.zip"
+ ],
+ "profiles": {
+  "EQ": "20261009T1030Z_1D_TC08-2W-RTC1-PTClin2_EQ_001.xml",
+  "SSH": "20261009T1030Z_1D_TC08-2W-RTC1-PTClin2_SSH_001.xml",
+  "TP": "20261009T1030Z_1D_TC08-2W-RTC1-PTClin2_TP_001.xml",
+  "SV": "20261009T1030Z_1D_TC08-2W-RTC1-PTClin2_SV_001.xml"
+ },
+ "solution": {
+  "end2_rule": "keep",
+  "iterations": 4,
+  "max_mismatch_mva": 1.0325074129013956e-12,
+  "buses": {
+   "B1": {
+    "kv": 220,
+    "v_kv": 225.0,
+    "angle_deg": 0.0
+   },
+   "B2": {
+    "kv": 110,
+    "v_kv": 108.5149318909958,
+    "angle_deg": -0.54898582529836
+   }
+  },
+  "flows": {
+   "Grid T1": {
+    "p_mw": -200.46626127852494,
+    "q_mvar": -78.64462196786003
+   },
+   "TX T1": {
+    "p_mw": 178.4009565136664,
+    "q_mvar": 1.8856682545562318
+   },
+   "TX T2": {
+    "p_mw": -178.0078767768391,
+    "q_mvar": 13.832606957050016
+   },
+   "TP T1": {
+    "p_mw": 22.065304764858563,
+    "q_mvar": 76.7589537133038
+   },
+   "TP T2": {
+    "p_mw": -21.99212322316087,
+    "q_mvar": -73.83260695704898
+   },
+   "LD2 T1": {
+    "p_mw": 200.0,
+    "q_mvar": 60.0
+   }
+  },
+  "taps": [
+   {
+    "name": "TX RTC1",
+    "cls": "RatioTapChanger",
+    "end": 1,
+    "step": 14.0,
+    "ratio": 1.0375,
+    "angle": 0.0
+   },
+   {
+    "name": "TX PTC2",
+    "cls": "PhaseTapChangerLinear",
+    "end": 2,
+    "step": 16.0,
+    "ratio": 1.0,
+    "angle": 4.5
+   }
+  ]
+ },
+ "solution_end2_inverted": {
+  "end2_rule": "invert",
+  "iterations": 4,
+  "max_mismatch_mva": 9.769962616701378e-13,
+  "buses": {
+   "B1": {
+    "kv": 220,
+    "v_kv": 225.0,
+    "angle_deg": 0.0
+   },
+   "B2": {
+    "kv": 110,
+    "v_kv": 108.51493189099577,
+    "angle_deg": -4.966121153552351
+   }
+  },
+  "flows": {
+   "Grid T1": {
+    "p_mw": -200.46626127852497,
+    "q_mvar": -78.6446219678615
+   },
+   "TX T1": {
+    "p_mw": 16.440201264761168,
+    "q_mvar": -1.8604688302824277
+   },
+   "TX T2": {
+    "p_mw": -16.436820783575847,
+    "q_mvar": 1.9956458151017473
+   },
+   "TP T1": {
+    "p_mw": 184.0260600137638,
+    "q_mvar": 80.50509079814393
+   },
+   "TP T2": {
+    "p_mw": -183.56317921642417,
+    "q_mvar": -61.995645815102726
+   },
+   "LD2 T1": {
+    "p_mw": 200.0,
+    "q_mvar": 60.0
+   }
+  },
+  "taps": [
+   {
+    "name": "TX RTC1",
+    "cls": "RatioTapChanger",
+    "end": 1,
+    "step": 14.0,
+    "ratio": 1.0375,
+    "angle": 0.0
+   },
+   {
+    "name": "TX PTC2",
+    "cls": "PhaseTapChangerLinear",
+    "end": 2,
+    "step": 16.0,
+    "ratio": 1.0,
+    "angle": -4.5
+   }
+  ]
+ }
+}

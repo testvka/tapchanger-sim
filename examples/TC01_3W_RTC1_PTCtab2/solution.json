@@ -1,0 +1,180 @@
+{
+ "code": "TC01_3W_RTC1_PTCtab2",
+ "row": 1,
+ "windings": 3,
+ "noload": false,
+ "title": "Three-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerTabular on end 2",
+ "description": "Row 1 of the tap-configuration list: 2 tap changer(s) on a 3-winding transformer; fixed steps, plain parallel transformer TP.",
+ "taps": [
+  {
+   "end": 1,
+   "kind": "RTC",
+   "class": "RatioTapChanger",
+   "text": "RatioTapChanger on end 1: steps 1..21, neutral 11, stepVoltageIncrement 1.25 %, step 14 -> ratio 1.0375"
+  },
+  {
+   "end": 2,
+   "kind": "PTCtab",
+   "class": "PhaseTapChangerTabular",
+   "text": "PhaseTapChangerTabular on end 2: 13-point non-equidistant table (angle -24..+24 deg, ratio 0.960..1.044, r/x/g/b 0 %), neutral 7, step 9 -> +5.5 deg, ratio 1.010"
+  }
+ ],
+ "disputed_end2_rule": true,
+ "archives": [
+  "TC01_3W_RTC1_PTCtab2.zip"
+ ],
+ "profiles": {
+  "EQ": "20261009T1030Z_1D_TC01-3W-RTC1-PTCtab2_EQ_001.xml",
+  "SSH": "20261009T1030Z_1D_TC01-3W-RTC1-PTCtab2_SSH_001.xml",
+  "TP": "20261009T1030Z_1D_TC01-3W-RTC1-PTCtab2_TP_001.xml",
+  "SV": "20261009T1030Z_1D_TC01-3W-RTC1-PTCtab2_SV_001.xml"
+ },
+ "solution": {
+  "end2_rule": "keep",
+  "iterations": 4,
+  "max_mismatch_mva": 2.78367506111378e-12,
+  "buses": {
+   "B1": {
+    "kv": 220,
+    "v_kv": 225.0,
+    "angle_deg": 0.0
+   },
+   "B2": {
+    "kv": 110,
+    "v_kv": 109.20966539958809,
+    "angle_deg": 0.27296061020754997
+   },
+   "B3": {
+    "kv": 20,
+    "v_kv": 19.44499807255474,
+    "angle_deg": -4.155990040833445
+   }
+  },
+  "flows": {
+   "Grid T1": {
+    "p_mw": -190.52648165138478,
+    "q_mvar": -79.64112215662432
+   },
+   "TX T1": {
+    "p_mw": 199.00713027895287,
+    "q_mvar": 15.651863325806076
+   },
+   "TX T2": {
+    "p_mw": -168.52844971976563,
+    "q_mvar": 12.077812749571965
+   },
+   "TX T3": {
+    "p_mw": -30.000000000000004,
+    "q_mvar": -9.999999999999815
+   },
+   "TP T1": {
+    "p_mw": -8.480648627568096,
+    "q_mvar": 63.989258830818244
+   },
+   "TP T2": {
+    "p_mw": 8.528449719765572,
+    "q_mvar": -62.077812749573056
+   },
+   "LD2 T1": {
+    "p_mw": 160.0,
+    "q_mvar": 50.0
+   },
+   "LD3 T1": {
+    "p_mw": 30.0,
+    "q_mvar": 10.0
+   }
+  },
+  "taps": [
+   {
+    "name": "TX RTC1",
+    "cls": "RatioTapChanger",
+    "end": 1,
+    "step": 14.0,
+    "ratio": 1.0375,
+    "angle": 0.0
+   },
+   {
+    "name": "TX PTC2",
+    "cls": "PhaseTapChangerTabular",
+    "end": 2,
+    "step": 9.0,
+    "ratio": 1.01,
+    "angle": 5.5
+   }
+  ]
+ },
+ "solution_end2_inverted": {
+  "end2_rule": "invert",
+  "iterations": 4,
+  "max_mismatch_mva": 7.017060664722981e-13,
+  "buses": {
+   "B1": {
+    "kv": 220,
+    "v_kv": 225.0,
+    "angle_deg": 0.0
+   },
+   "B2": {
+    "kv": 110,
+    "v_kv": 108.08781634901372,
+    "angle_deg": -5.124105470164483
+   },
+   "B3": {
+    "kv": 20,
+    "v_kv": 19.5613475123574,
+    "angle_deg": -1.339444431609652
+   }
+  },
+  "flows": {
+   "Grid T1": {
+    "p_mw": -190.56451058726915,
+    "q_mvar": -81.17854595404243
+   },
+   "TX T1": {
+    "p_mw": 1.2869274223741063,
+    "q_mvar": -7.947720983336009
+   },
+   "TX T2": {
+    "p_mw": 28.77543358138544,
+    "q_mvar": 19.046561443761163
+   },
+   "TX T3": {
+    "p_mw": -29.99999999999999,
+    "q_mvar": -10.000000000000036
+   },
+   "TP T1": {
+    "p_mw": 189.27758316489505,
+    "q_mvar": 89.12626693737845
+   },
+   "TP T2": {
+    "p_mw": -188.7754335813853,
+    "q_mvar": -69.04656144376092
+   },
+   "LD2 T1": {
+    "p_mw": 160.0,
+    "q_mvar": 50.0
+   },
+   "LD3 T1": {
+    "p_mw": 30.0,
+    "q_mvar": 10.0
+   }
+  },
+  "taps": [
+   {
+    "name": "TX RTC1",
+    "cls": "RatioTapChanger",
+    "end": 1,
+    "step": 14.0,
+    "ratio": 1.0375,
+    "angle": 0.0
+   },
+   {
+    "name": "TX PTC2",
+    "cls": "PhaseTapChangerTabular",
+    "end": 2,
+    "step": 9.0,
+    "ratio": 0.9900990099009901,
+    "angle": -5.5
+   }
+  ]
+ }
+}

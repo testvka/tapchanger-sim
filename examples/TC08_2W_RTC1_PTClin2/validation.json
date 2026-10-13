@@ -1,0 +1,62 @@
+{
+ "main": {
+  "sv_vs_solution": {
+   "buses": 2,
+   "missing": 0,
+   "max_dv_pu": 9.909473161232283e-10,
+   "max_dangle_deg": 1.7470163993227317e-07,
+   "terminals": 4,
+   "max_dp_mw": 4.863336187099776e-07,
+   "max_dq_mvar": 2.866962063308165e-07
+  },
+  "powsybl": {
+   "status": "CONVERGED",
+   "iterations": 3,
+   "taps_in_iidm": [
+    {
+     "iidm_id": "28c7ba53-37fd-523b-a980-9ac14e8d721e",
+     "transformer": "TX",
+     "side": "",
+     "kind": "ratio",
+     "tap": 14,
+     "low": 1,
+     "high": 21,
+     "rho": 0.9638554216867469,
+     "x_pct": 0.0
+    },
+    {
+     "iidm_id": "28c7ba53-37fd-523b-a980-9ac14e8d721e",
+     "transformer": "TX",
+     "side": "",
+     "kind": "phase",
+     "tap": 16,
+     "low": 1,
+     "high": 25,
+     "rho": 0.9999999999999998,
+     "alpha": 4.500000000000001,
+     "x_pct": 0.0
+    }
+   ],
+   "two_winding": 2,
+   "three_winding": 0,
+   "vs_sv": {
+    "buses": 2,
+    "missing": 0,
+    "max_dv_pu": 9.908665726305282e-10,
+    "max_dangle_deg": 1.7470164725974513e-07,
+    "terminals": 4,
+    "max_dp_mw": 4.863233584728732e-07,
+    "max_dq_mvar": 2.8686770292551955e-07
+   },
+   "vs_inverted_reading": {
+    "buses": 2,
+    "missing": 0,
+    "max_dv_pu": 8.100187187665142e-14,
+    "max_dangle_deg": 4.417135328253998,
+    "terminals": 4,
+    "max_dp_mw": 161.9607552489155,
+    "max_dq_mvar": 11.836961142114854
+   }
+  }
+ }
+}

@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rdf:RDF xmlns:cim="http://iec.ch/TC57/CIM100#" xmlns:eu="http://iec.ch/TC57/CIM100-European#" xmlns:md="http://iec.ch/TC57/61970-552/ModelDescription/1#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <md:FullModel rdf:about="urn:uuid:5b707b46-6409-503d-a527-305a5fa6d945">
+    <md:Model.created>2026-10-09T12:00:00Z</md:Model.created>
+    <md:Model.scenarioTime>2026-10-09T10:30:00Z</md:Model.scenarioTime>
+    <md:Model.description>TC08_2W_RTC1_PTClin2: Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 2 - alternative SV: inverted end-2 reading of linear/tabular phase tap changers (1/ratio, -angle), not the reference solution</md:Model.description>
+    <md:Model.modelingAuthoritySet>http://example.org/cgmes30-tap-configurations</md:Model.modelingAuthoritySet>
+    <md:Model.profile>http://iec.ch/TC57/ns/CIM/StateVariables-EU/3.0</md:Model.profile>
+    <md:Model.version>1</md:Model.version>
+    <md:Model.DependentOn rdf:resource="urn:uuid:378e7fed-b181-58eb-86a1-dd57ba842aac"/>
+  </md:FullModel>
+  <cim:SvVoltage rdf:ID="_328eb8b7-c93e-5c52-81e3-9ba1662cf2c0">
+    <cim:SvVoltage.v>225</cim:SvVoltage.v>
+    <cim:SvVoltage.angle>0</cim:SvVoltage.angle>
+    <cim:SvVoltage.TopologicalNode rdf:resource="#_4045d3b0-1538-5933-837c-ad05c731d18e"/>
+  </cim:SvVoltage>
+  <cim:SvVoltage rdf:ID="_afa825ac-709d-5e1a-96ba-bcf74439d1bf">
+    <cim:SvVoltage.v>108.514932</cim:SvVoltage.v>
+    <cim:SvVoltage.angle>-4.966121</cim:SvVoltage.angle>
+    <cim:SvVoltage.TopologicalNode rdf:resource="#_c1b62de8-d922-59ca-8223-78db16e664bb"/>
+  </cim:SvVoltage>
+  <cim:SvPowerFlow rdf:ID="_5551446a-bdbc-537f-848d-4fcb09b49c8c">
+    <cim:SvPowerFlow.p>-200.466261</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>-78.644622</cim:SvPowerFlow.q>
+    <cim:SvPowerFlow.Terminal rdf:resource="#_27681338-9966-5118-b988-db3c9dc4748e"/>
+  </cim:SvPowerFlow>
+  <cim:SvPowerFlow rdf:ID="_45d7c63b-6023-5a69-8f5d-7fe4f4a26e5d">
+    <cim:SvPowerFlow.p>16.440201</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>-1.860469</cim:SvPowerFlow.q>
+    <cim:SvPowerFlow.Terminal rdf:resource="#_bedb303a-b615-5ee3-943f-ed5a4aa86313"/>
+  </cim:SvPowerFlow>
+  <cim:SvPowerFlow rdf:ID="_25aaa317-4682-56e8-afe6-6eb25f77293d">
+    <cim:SvPowerFlow.p>-16.436821</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>1.995646</cim:SvPowerFlow.q>
+    <cim:SvPowerFlow.Terminal rdf:resource="#_96dec3da-3542-583f-a755-eb8b4a34dcca"/>
+  </cim:SvPowerFlow>
+  <cim:SvPowerFlow rdf:ID="_34dffdd5-a969-5c42-b66a-35c56061a0cc">
+    <cim:SvPowerFlow.p>184.02606</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>80.505091</cim:SvPowerFlow.q>
+    <cim:SvPowerFlow.Terminal rdf:resource="#_42acd807-aec6-5615-a9be-58542862386f"/>
+  </cim:SvPowerFlow>
+  <cim:SvPowerFlow rdf:ID="_1e3fda3a-cebe-5cb3-a104-1ddf91fb64ef">
+    <cim:SvPowerFlow.p>-183.563179</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>-61.995646</cim:SvPowerFlow.q>
+    <cim:SvPowerFlow.Terminal rdf:resource="#_c8468c25-15db-5baf-8f64-7f6b2f71c963"/>
+  </cim:SvPowerFlow>
+  <cim:SvPowerFlow rdf:ID="_f00bed62-32cf-59e7-abc3-f2edf3626df6">
+    <cim:SvPowerFlow.p>200</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>60</cim:SvPowerFlow.q>
+    <cim:SvPowerFlow.Terminal rdf:resource="#_23eb876b-1ea7-5274-bffc-f9a7a3c20436"/>
+  </cim:SvPowerFlow>
+  <cim:SvStatus rdf:ID="_02a04e4b-06cc-58ab-babc-d320470b1890">
+    <cim:SvStatus.inService>true</cim:SvStatus.inService>
+    <cim:SvStatus.ConductingEquipment rdf:resource="#_3887cf70-a34b-5de7-82c6-dd026c79373a"/>
+  </cim:SvStatus>
+  <cim:SvStatus rdf:ID="_1378b867-fded-5152-8043-65d0b98a1c3b">
+    <cim:SvStatus.inService>true</cim:SvStatus.inService>
+    <cim:SvStatus.ConductingEquipment rdf:resource="#_28c7ba53-37fd-523b-a980-9ac14e8d721e"/>
+  </cim:SvStatus>
+  <cim:SvTapStep rdf:ID="_3bc8b2aa-2590-5e6f-a701-7d44b8a3b95d">
+    <cim:SvTapStep.position>14</cim:SvTapStep.position>
+    <cim:SvTapStep.TapChanger rdf:resource="#_541be8fe-f01c-5645-ac8c-d647c16f509c"/>
+  </cim:SvTapStep>
+  <cim:SvTapStep rdf:ID="_c751e09e-3a2c-517c-a9e8-f7ae885441e1">
+    <cim:SvTapStep.position>16</cim:SvTapStep.position>
+    <cim:SvTapStep.TapChanger rdf:resource="#_92908973-089c-5cd7-a571-ff6a4d899386"/>
+  </cim:SvTapStep>
+  <cim:SvStatus rdf:ID="_7e721ad3-1090-50c2-afa2-adf4fe1444f9">
+    <cim:SvStatus.inService>true</cim:SvStatus.inService>
+    <cim:SvStatus.ConductingEquipment rdf:resource="#_059a72e6-12b7-54b0-80e0-bb85869fdf31"/>
+  </cim:SvStatus>
+  <cim:SvStatus rdf:ID="_b4b98bd7-a71f-57e3-8604-2168c2e30bfa">
+    <cim:SvStatus.inService>true</cim:SvStatus.inService>
+    <cim:SvStatus.ConductingEquipment rdf:resource="#_1863e8ec-8a9b-5365-a972-24a8a940e586"/>
+  </cim:SvStatus>
+  <cim:TopologicalIsland rdf:ID="_66e9dc55-b2e5-5e00-9717-6a581bcc9df1">
+    <cim:IdentifiedObject.name>TC08_2W_RTC1_PTClin2 island</cim:IdentifiedObject.name>
+    <cim:TopologicalIsland.TopologicalNodes rdf:resource="#_4045d3b0-1538-5933-837c-ad05c731d18e"/>
+    <cim:TopologicalIsland.TopologicalNodes rdf:resource="#_c1b62de8-d922-59ca-8223-78db16e664bb"/>
+    <cim:TopologicalIsland.AngleRefTopologicalNode rdf:resource="#_4045d3b0-1538-5933-837c-ad05c731d18e"/>
+    <cim:IdentifiedObject.mRID>66e9dc55-b2e5-5e00-9717-6a581bcc9df1</cim:IdentifiedObject.mRID>
+  </cim:TopologicalIsland>
+</rdf:RDF>
