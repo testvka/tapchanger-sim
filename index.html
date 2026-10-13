@@ -50,6 +50,7 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
 .hint{font-size:.85rem;color:#555}
 .contrib{padding-left:1.2em} .contrib li{font-size:.85rem}
 .explain h3{margin:.9em 0 .2em} .explain h3:first-child{margin-top:0} .explain p,.explain li{font-size:.9rem}
+.tabtc tr.cur td{background:#fde68a;font-weight:600}
 .explain table{margin:.3em 0 .5em} .explain .seg{margin-top:.4em}
 </style></head><body>
 <div class="wrap">
@@ -95,10 +96,10 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
       </section>
     </div>
     <div class="res">
-      <section class="panel"><div id="status" class="status"></div><div id="sld"></div></section>
-      <section class="panel"><h2>Explanation of this combination</h2><div id="explain" class="explain"></div></section>
+      <section class="panel"><div id="status" class="status"></div><label class="chk"><input type="checkbox" id="angles" checked> Show angles on the diagram</label><div id="sld"></div></section>
       <section class="panel"><h2>Which tap changer causes which part of the voltage change</h2><div id="phasor"></div><ul id="contrib" class="contrib"></ul></section>
       <section class="panel"><h2>Load flow results</h2><div class="two"><div class="scroll" id="tbus"></div><div class="scroll" id="tflow"></div></div></section>
+      <section class="panel"><h2>Explanation of this combination</h2><div id="explain" class="explain"></div></section>
     </div>
   </div>
 </div>
@@ -129,6 +130,7 @@ const DEF = {
 const $ = (id) => document.getElementById(id);
 let presets = [];               // content of presets.json (the 64 test cases)
 let model = defaultModel(2);    // the current input data (see defaultModel in solver.mjs); changed by every input
+let showAngles = true;          // "Show angles on the diagram" checkbox
 
 /** A new tap changer of the given type ("RTC", "PTClin", ...) on end 1-3 with the default data (a copy). */
 function defaultTap(type, end) {
@@ -164,6 +166,8 @@ function slotHtml(e, slot, tc) {
   if (tc.type === "PTCasym") fields.push(["theta", "windingConnectionAngle °"]);
   h += fields.map(([f, l]) => `<label>${l}<input type="number" data-e="${e}" data-s="${slot}" data-f="${f}" value="${tc[f]}" step="${["svi", "vsi", "deg"].includes(f) ? 0.05 : 1}"></label>`).join("");
   h += `</div><div class="readout" id="ro${k}"></div>`;
+  if (tc.type === "PTCtab" && tc.table) h += `<div class="scroll"><table class="tabtc" id="tb${k}"><thead><tr><th>Step</th><th>Angle °</th><th>Ratio</th></tr></thead><tbody>`
+    + tc.table.map((x) => `<tr data-step="${x.step}"><td>${x.step}</td><td>${x.angle}</td><td>${x.ratio}</td></tr>`).join("") + `</tbody></table></div>`;
   const c = tc.control || {};
   const targets = slot === "r" ? [["V:B2", "V at B2, kV"], ...(model.windings === 3 ? [["V:B3", "V at B3, kV"]] : [])] : [["P:TX", "P into TX, MW"]];
   h += `<label class="chk"><input type="checkbox" data-e="${e}" data-s="${slot}" data-f="ctl"${c.on ? " checked" : ""}> automatic control</label>`;
@@ -285,6 +289,8 @@ function sldSvg(r) {
   // the solved tap changers of end e
   const tapAt = (e) => r.taps.filter((t) => t.end === e);
   const out = [`<defs>${marker("am-rt", "mk-rt")}${marker("am-ph", "mk-ph")}${marker("am-ink", "mk-ink")}</defs>`];
+  // angle label of bus n (empty when the angles are hidden)
+  const ang = (n) => showAngles ? `, ${f1(b[n].angleDeg, 3)}°` : "";
   // voltage label of bus n: "110.674 kV, 1.00613 pu"
   const vtxt = (n) => `${b[n].vKv.toFixed(3)} kV, ${b[n].vPu.toFixed(4)} pu`;
   // two text lines with P (arrow down = into the equipment) and Q of a flow, at pixel position x, y
@@ -294,10 +300,10 @@ function sldSvg(r) {
     if (!t.length) return "";
     const c = t.some((x) => x.type !== "RTC") ? "ph" : "rt";
     const k = rr * 0.95;
-    const lab = t.map((x, i) => `<tspan x="${lx}" dy="${i ? 13 : 0}" class="t${x.type === "RTC" ? "rt" : "ph"}">${x.type} step ${x.step}: ${x.type === "RTC" ? "ratio " + x.ratio.toFixed(4) : f1(x.angle, 2) + "°" + (Math.abs(x.ratio - 1) > 1e-9 ? ", ratio " + x.ratio.toFixed(4) : "")}</tspan>`).join("");
+    const lab = t.map((x, i) => `<tspan x="${lx}" dy="${i ? 13 : 0}" class="t${x.type === "RTC" ? "rt" : "ph"}">${x.type} step ${x.step}: ${x.type === "RTC" ? "ratio " + x.ratio.toFixed(4) : [showAngles ? f1(x.angle, 2) + "°" : "", Math.abs(x.ratio - 1) > 1e-9 ? "ratio " + x.ratio.toFixed(4) : ""].filter(Boolean).join(", ")}</tspan>`).join("");
     return `<line x1="${cx - k}" y1="${cy + k}" x2="${cx + k}" y2="${cy - k}" class="tap ${c}" marker-end="url(#am-${c})"/><text x="${lx}" y="${ly - (t.length - 1) * 6}" text-anchor="${anchor}">${lab}</text>`;
   };
-  out.push(`<line x1="40" y1="70" x2="580" y2="70" class="bus"/><text x="40" y="58" class="bn">B1, 220 kV</text><text x="40" y="92" class="bv">${vtxt("B1")}, ${f1(b.B1.angleDeg, 3)}°</text>`);
+  out.push(`<line x1="40" y1="70" x2="580" y2="70" class="bus"/><text x="40" y="58" class="bn">B1, 220 kV</text><text x="40" y="92" class="bv">${vtxt("B1")}${ang("B1")}</text>`);
   out.push(`<rect x="${gX - 18}" y="12" width="36" height="22" class="ext"/><line x1="${gX}" y1="34" x2="${gX}" y2="70" class="wire"/><text x="${gX - 24}" y="27" text-anchor="end" class="lb">Grid (slack), ${model.vSourceKv} kV</text>`);
   if (w === 2) {
     out.push(`<line x1="230" y1="70" x2="230" y2="118" class="wire"/><circle cx="230" cy="138" r="20" class="wind"/><circle cx="230" cy="166" r="20" class="wind"/><line x1="230" y1="186" x2="230" y2="${yB2}" class="wire"/><text x="258" y="156" class="nm">TX</text>`);
@@ -307,14 +313,14 @@ function sldSvg(r) {
     out.push(`<line x1="200" y1="70" x2="200" y2="98" class="wire"/><circle cx="200" cy="116" r="18" class="wind"/><circle cx="189" cy="138" r="18" class="wind"/><circle cx="211" cy="138" r="18" class="wind"/><line x1="189" y1="156" x2="189" y2="${yB2}" class="wire"/><polyline points="229,138 300,138 300,180" class="wire"/><text x="222" y="110" class="nm">TX</text>`);
     out.push(tapMark(200, 116, 18, tapAt(1), 176, 112, "end"), tapMark(189, 138, 18, tapAt(2), 165, 162, "end"), tapMark(211, 138, 18, tapAt(3), 240, 128, "start"));
     out.push(flowTxt(262, 86, fl["TX T1"]));   // right of the B1 voltage text
-    out.push(`<line x1="260" y1="180" x2="340" y2="180" class="bus"/><text x="348" y="176" class="bn">B3, 20 kV</text><text x="348" y="190" class="bv">${vtxt("B3")}</text><text x="348" y="203" class="bv">${f1(b.B3.angleDeg, 3)}°${model.noLoad ? ", open" : ""}</text>`);
+    out.push(`<line x1="260" y1="180" x2="340" y2="180" class="bus"/><text x="348" y="176" class="bn">B3, 20 kV</text><text x="348" y="190" class="bv">${vtxt("B3")}</text><text x="348" y="203" class="bv">${(showAngles ? f1(b.B3.angleDeg, 3) + "°" : "") + (model.noLoad ? (showAngles ? ", " : "") + "open" : "")}</text>`);
     if (!model.noLoad) out.push(`<line x1="325" y1="180" x2="325" y2="216" class="wire" marker-end="url(#am-ink)"/><text x="331" y="230" class="lb">LD3 ${model.loads.B3.p} MW / ${model.loads.B3.q} Mvar</text>`);
   }
   if (tp) {
     out.push(`<line x1="${tpX}" y1="70" x2="${tpX}" y2="122" class="wire"/><circle cx="${tpX}" cy="140" r="18" class="wind"/><circle cx="${tpX}" cy="164" r="18" class="wind"/><line x1="${tpX}" y1="182" x2="${tpX}" y2="${yB2}" class="wire"/><text x="${tpX - 26}" y="150" text-anchor="end" class="nm">TP</text><text x="${tpX - 26}" y="164" text-anchor="end" class="lb">no taps</text>`);
     out.push(flowTxt(tpX + 8, 100, fl["TP T1"]));
   }
-  out.push(`<line x1="40" y1="${yB2}" x2="${tp ? 580 : 300}" y2="${yB2}" class="bus"/><text x="40" y="${yB2 + 22}" class="bn">B2, 110 kV</text><text x="40" y="${yB2 + 36}" class="bv">${vtxt("B2")}, ${f1(b.B2.angleDeg, 3)}°</text>`);
+  out.push(`<line x1="40" y1="${yB2}" x2="${tp ? 580 : 300}" y2="${yB2}" class="bus"/><text x="40" y="${yB2 + 22}" class="bn">B2, 110 kV</text><text x="40" y="${yB2 + 36}" class="bv">${vtxt("B2")}${ang("B2")}</text>`);
   if (!model.noLoad) out.push(`<line x1="${ldX}" y1="${yB2}" x2="${ldX}" y2="${yB2 + 36}" class="wire" marker-end="url(#am-ink)"/><text x="580" y="${yB2 + 52}" text-anchor="end" class="lb">LD2 ${model.loads.B2.p} MW / ${model.loads.B2.q} Mvar</text>`);
   else out.push(`<text x="310" y="${yB2 + 4}" class="lb">open (no load)</text>`);
   return `<svg viewBox="0 0 600 ${H}" role="img" aria-label="Single-line diagram">${out.join("")}</svg>`;
@@ -418,6 +424,8 @@ function run() {
     const v = tapValue(tc, model.end2Rule), ro = $("ro" + k), sv = $("stepv" + k), rg = $("rng" + k);
     if (sv) sv.textContent = `${tc.step} (neutral ${tc.neutral})`;
     if (rg && +rg.value !== tc.step) rg.value = tc.step;
+    const tb = $("tb" + k);
+    if (tb) tb.querySelectorAll("tr[data-step]").forEach((tr) => tr.classList.toggle("cur", +tr.dataset.step === tc.step));
     if (ro) ro.textContent = v.formula + (v.inverted ? "; inverted reading: ratio " + v.ratio.toFixed(5) + ", angle " + f1(v.angle, 3) + "°" : "");
     const st = (r.controlState || []).find((x) => x.tap === `${tc.type} end ${tc.end}`), cs = $("cs" + k);
     const tip = st && st.status === "hunting" ? ` - the band is narrower than one step (one step moves it by ${st.stepEffect.toFixed(2)}); widen the deadband`
@@ -467,6 +475,7 @@ document.querySelectorAll("#wseg button").forEach((b) => b.addEventListener("cli
 }], ["tp", (v) => { model.tp.on = v; }]].forEach(([id, fn]) => $(id).addEventListener("change", (ev) => { fn(ev.target.checked); $("preset").value = ""; run(); }));
 [["vs", (v) => { model.vSourceKv = v; }], ["p2", (v) => { model.loads.B2.p = v; }], ["q2", (v) => { model.loads.B2.q = v; }],
  ["p3", (v) => { model.loads.B3.p = v; }], ["q3", (v) => { model.loads.B3.q = v; }]].forEach(([id, fn]) => $(id).addEventListener("input", (ev) => { fn(+ev.target.value); $("preset").value = ""; run(); }));
+$("angles").addEventListener("change", (ev) => { showAngles = ev.target.checked; run(); });
 $("rule").addEventListener("change", (ev) => { model.end2Rule = ev.target.value; run(); });
 $("preset").addEventListener("change", (ev) => { openPreset(ev.target.value); });
 if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("hashchange", () => openPreset(decodeURIComponent(location.hash.slice(1))));
