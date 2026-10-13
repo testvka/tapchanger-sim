@@ -1,8 +1,20 @@
 // Automatic tap control of the simulator: RTC holds a voltage, PST holds active power, unreachable target -> limit.
 // Usage: node test_control.mjs
+//
+// For beginners: each test builds a small model, switches on the automatic control of one or two tap changers
+// (control: { on, target, value = setpoint, deadband = full width of the allowed band }) and checks the final status
+// of each controller ("held", "at limit", "hunting", "no effect"; see solveWithControl in solver.mjs).
+// target "V:B2" = voltage of bus B2 in kV, "P:TX" = active power into TX at its 220 kV terminal in MW.
+// Exit code 1 when any test fails.
 import { defaultModel, solveWithControl } from "./solver.mjs";
 
 let fails = 0;
+/**
+ * Run the controlled load flow and compare the status of each controller with the expected one.
+ * @param {string} name test name for the log. @param {object} m model with controlled tap changers.
+ * @param {string[]} expect expected status per controlled tap changer, in model.taps order.
+ * Side effect: prints one line; counts failures in `fails`.
+ */
 function check(name, m, expect) {
   const r = solveWithControl(m);
   const st = r.controlState.map((s) => `${s.tap} ${s.status} at step ${s.step}: ${s.value.toFixed(2)} (target ${s.setpoint})`).join("; ");
