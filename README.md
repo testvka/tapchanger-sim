@@ -45,3 +45,17 @@ Files:
   pair table with the stored results, checks the physics the text states (no-load voltage = V_B1 · t_k / t_1, a pure
   phase shift moves active power in the direction of its angle, a pure ratio change mainly reactive power) and
   explains 2,000 random combinations.
+
+## CGMES 3.0 example cases
+
+`examples/` holds two of the 64 cases as CGMES 3.0 files (EQ, SSH, TP and SV in one zip), with their expected
+solution. Both are loaded cases with a ratio tap changer on end 1 and a phase tap changer on end 2, the end where the
+reading of the phase shift matters:
+
+- `examples/TC08_2W_RTC1_PTClin2`: two-winding transformer, RatioTapChanger on end 1 + PhaseTapChangerLinear on
+  end 2 (`index.html#TC08_2W_RTC1_PTClin2` opens it in the simulator).
+- `examples/TC01_3W_RTC1_PTCtab2`: three-winding transformer, RatioTapChanger on end 1 + PhaseTapChangerTabular on
+  end 2 (`index.html#TC01_3W_RTC1_PTCtab2`).
+
+`python3 examples/check_examples.py` checks that the SV voltages of both cases (and of the inverted end-2 reading)
+equal the expected values the simulator uses. See `examples/README.md`.
