@@ -85,9 +85,30 @@ const KIND = {
   RTC: "A ratio tap changer scales the winding voltage in phase: t = 1 + n · stepVoltageIncrement / 100 with n = step − neutral; the angle stays 0°.",
   PTClin: "A linear phase tap changer turns the voltage by n · stepPhaseShiftIncrement and leaves the magnitude at 1. CGMES describes it only by the angle per step, not by a winding design.",
   PTCsym: "A symmetrical phase shifter adds two equal series voltages, so the magnitude stays 1 and the angle is 2 · atan(n · du / 2) with du = voltageStepIncrement: slightly smaller in size than n · du (in radians) and not linear in the step.",
-  PTCasym: "An asymmetrical phase shifter (booster) adds n · du at the windingConnectionAngle θ: t = 1 + n · du · e^(jθ). It turns the angle and changes the magnitude at the same time.",
+  PTCasym: "An asymmetrical phase shifter (booster) adds n · du at the windingConnectionAngle θ: t = 1 + n · du · e^(jθ). It turns the angle and changes the magnitude at the same time; because that step is added to a fixed length-1 baseline, arg(t) is normally far below θ itself.",
   PTCtab: "A tabular phase tap changer takes angle and ratio of every step from its table. The points need not be equidistant, so no formula converts a step into an angle.",
 };
+
+/**
+ * Extra sentence for an asymmetrical phase shifter: the cos/sin split of the step and why arg(t) is usually far
+ * from θ (windingConnectionAngle). t = 1 + du · e^(jθ) adds a step of length |du| to a fixed length-1 baseline, so
+ * arg(t) = atan2(du·sinθ, 1 + du·cosθ) reaches θ only as |du| → ∞; the half-angle identity gives the one point that
+ * does not depend on θ's size: at |du| = 1, arg(t) = θ/2 exactly.
+ * @param {object} tc the PTCasym tap changer (needs step, neutral, vsi, theta). @param {object} v tapValue(tc).
+ */
+function asymExtra(tc, v) {
+  const n = tc.step - tc.neutral;
+  if (n === 0) return ` Here θ = ${tc.theta}°; at neutral (n = 0) the step has length 0, so t = 1 whatever θ is.`;
+  const du = (n * tc.vsi) / 100;
+  const th = (tc.theta * Math.PI) / 180;
+  const re = 1 + du * Math.cos(th), im = du * Math.sin(th);
+  const half = wrap(tc.theta / 2);
+  return ` Here θ = ${tc.theta}°, du = n · ${tc.vsi} / 100 = ${fx(du, 4)}, so t = (1 + du·cosθ) + j·du·sinθ = `
+    + `${fx(re, 5)} + j${fx(im, 5)}: ratio ${fx(v.ratio, 5)}, angle ${sg(v.angle)}°, not θ — the step (length `
+    + `${fx(Math.abs(du), 3)}) is added to a fixed length-1 baseline, so by arg(t) = atan2(du·sinθ, 1 + du·cosθ) `
+    + `the angle reaches only θ/2 = ${fx(half, 1)}° when |du| = 1 and approaches θ itself only as |du| → ∞; it is `
+    + `never exactly θ for a finite step.`;
+}
 
 /** One sentence on what the end of a tap changer means (end 1 divides, end 2 / 3 multiply). w = windings. */
 function place(tc, w) {
@@ -111,7 +132,7 @@ function tapItem(model, r, tc) {
   const v = tapValue(tc, model.end2Rule);
   const head = `${TAP_TYPES[tc.type]} on end ${tc.end} (${KVE[tc.end]} kV), step ${tc.step} (neutral ${tc.neutral}): ${v.formula}.`;
   const inv = v.inverted ? ` Read inverted (CGMES 2.4.15 conformity-case convention): ratio ${fx(v.ratio, 5)}, angle ${sg(v.angle)}°.` : "";
-  const extra = tc.type === "PTCasym" ? ` Here θ = ${tc.theta}°, so the ratio is ${fx(v.ratio, 5)} together with ${sg(v.angle)}°.` : "";
+  const extra = tc.type === "PTCasym" ? asymExtra(tc, v) : "";
   const c = contributions(r, tc);
   const here = c.length
     ? " Here it changes " + lst(c.map((x) => `${x.bus} by ${sg(x.dv)} kV` + (isPhase(tc) || Math.abs(x.da) > 5e-4 ? ` and ${sg(x.da)}°` : ""))) + "."
