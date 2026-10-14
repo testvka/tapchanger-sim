@@ -145,6 +145,30 @@ changes the **angle**, and some kinds also the size. CGMES describes four kinds:
   (du · cos θ = 0.0375) makes the arrow longer, its part across (du · sin θ = 0.06495) turns it. That is why an
   asymmetrical phase shifter also changes the ratio (here 1.0395).
 
+**Why the resulting angle is usually far from θ.** θ (windingConnectionAngle) is a fixed design value — it only
+sets the *direction* the small step arrow du points in, not the angle the transformer ends up turning the voltage
+by. That angle is arg(t), and
+
+```
+t = 1 + du · e^(jθ) = (1 + du·cosθ) + j·du·sinθ          arg(t) = atan2(du·sinθ, 1 + du·cosθ)
+```
+
+The "1" is a fixed-length baseline; du is normally small (a few percent per step), so the step arrow is short next
+to it and only turns the sum by a small amount — arg(t) only grows to θ itself as |du| → ∞ (du ≫ 1, i.e. an
+unrealistically large step). One checkpoint does not depend on how big θ is: by the half-angle identity
+sinθ / (1 + cosθ) = tan(θ/2), at |du| = 1 the angle is exactly θ/2, whatever θ is.
+
+Worked example at the extreme case θ = 90° (a pure quadrature booster), step 14, neutral 13, 10 %/step
+(du = 1 · 0.10 = 0.10, the simulator's "theta=90" preset):
+
+```
+t = 1 + 0.10 · e^(j90°) = 1 + j0.10 = 1.00499∠5.711°
+```
+
+Not 90° — even at θ = 90° the angle is only 5.711°, because du = 0.10 is far from the |du| = 1 checkpoint
+(which itself would give only θ/2 = 45°, still not 90°). Only for du ≫ 1 does arg(t) approach 90°: du = 1 gives
+45°, du = 10 gives 84.3°, du = 1000 gives 89.4° — the limit is reached only asymptotically, never exactly.
+
 **Two tap changers on one end** act one after the other, so their t multiply: an RTC 1.0375 and a linear PTC
 +4.5° on end 1 give t = 1.0375 · e^(j4.5°) (code: `build` in `solver.mjs`, the `tEnd` products).
 

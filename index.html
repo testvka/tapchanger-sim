@@ -357,14 +357,18 @@ function phasorSvg(chains) {
       out.push(`<line x1="${X(s.a)}" y1="${Y(s.a)}" x2="${X(rad)}" y2="${Y(rad)}" class="leg"/><line x1="${X(rad)}" y1="${Y(rad)}" x2="${X(s.b)}" y2="${Y(s.b)}" class="leg"/>`);
     }
     out.push(`<line x1="${X(s.a)}" y1="${Y(s.a)}" x2="${X(s.b)}" y2="${Y(s.b)}" class="step ${s.kind}" marker-end="url(#pm-${s.kind})"/>`);
+    // phase-type steps also turn the arrow: show the degrees turned next to the step's number/letter mark
+    const dAng = ((arg(s.b) - arg(s.a)) * 180 / Math.PI + 540) % 360 - 180;
+    const markTxt = s.kind === "ph" && Math.abs(dAng) > 5e-4 ? `${s.mark} ${f1(dAng, 2)}°` : s.mark;
     let lx = (X(s.a) + X(s.b)) / 2 + 10, ly = (Y(s.a) + Y(s.b)) / 2 - 6;
-    while (placed.some(([q, p]) => Math.abs(lx - q) < 18 && Math.abs(ly - p) < 16)) ly += 16;
-    placed.push([lx, ly]);
-    out.push(`<text x="${lx}" y="${ly}" text-anchor="middle" class="num t${s.kind}">${s.mark}</text>`);
+    const halfw = 6 + markTxt.length * 3.2;
+    while (placed.some(([q, p, hw]) => Math.abs(lx - q) < halfw + hw && Math.abs(ly - p) < 16)) ly += 16;
+    placed.push([lx, ly, halfw]);
+    out.push(`<text x="${lx}" y="${ly}" text-anchor="middle" class="num t${s.kind}">${markTxt}</text>`);
   }));
   const s0 = chains[0].start;
-  out.push(`<circle cx="${X(s0)}" cy="${Y(s0)}" r="3.5" class="dotw"/><text x="${X(s0) + 8}" y="${Y(s0) - 8}" class="pl">start: V1 · U_end/U_1 (no taps)</text>`);
-  chains.forEach((c) => { const z = c.steps.at(-1).b; out.push(`<circle cx="${X(z)}" cy="${Y(z)}" r="3.5" class="dot"/><text x="${X(z) + 8}" y="${Y(z) + 16}" class="pl">${c.bus}</text>`); });
+  out.push(`<circle cx="${X(s0)}" cy="${Y(s0)}" r="3.5" class="dotw"/><text x="${X(s0) + 8}" y="${Y(s0) - 8}" class="pl">start: V1 · U_end/U_1 (no taps), 0°</text>`);
+  chains.forEach((c) => { const z = c.steps.at(-1).b; out.push(`<circle cx="${X(z)}" cy="${Y(z)}" r="3.5" class="dot"/><text x="${X(z) + 8}" y="${Y(z) + 16}" class="pl">${c.bus} ${f1(arg(z) * 180 / Math.PI, 3)}°</text>`); });
   out.push(`</g><text x="8" y="${H + 16}" class="lb">pu of each bus, true angles, zoomed on the tips (1 pu = ${S.toFixed(0)} px)</text><text x="8" y="${H + 30}" class="lb">dashed legs: magnitude part, then angle part</text>`);
   return `<svg viewBox="0 0 ${W} ${H + 38}" role="img" aria-label="Phasor chain">${out.join("")}</svg>`;
 }
