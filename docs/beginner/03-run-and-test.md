@@ -28,6 +28,7 @@ From the repository folder:
 |---|---|---|
 | `node test_solver.mjs` | the solver against the expected voltages of all 64 cases, both end-2 readings | `78 comparisons, 0 failures, worst 1.05e-11 pu` |
 | `node test_control.mjs` | the automatic tap control (held, at limit, hunting, no effect) | every line starts with `ok` |
+| `node test_cgmes.mjs` | CGMES 2.4.15 / 3.0.0 ZIP and XML, settings and solved state (requires Python 3) | `268 CGMES archives checked ... 0 failures` |
 | `node test_explain.mjs` | the explanations: complete, correct pair values, the physics they state, 2,000 random models | `... 0 failures` |
 | `node smoke_ui.mjs standalone.html` | the page script with a fake browser, every preset | `64 presets rendered, 0 failures` |
 | `node smoke_ui.mjs` | the same for `index.html` | same |
@@ -42,7 +43,7 @@ limitation of the solver, not a test failure (the summary still says 0 failures)
 
 | You changed | Run |
 |---|---|
-| `index.html`, `solver.mjs`, `explain.mjs` or `presets.json` | `python3 bundle.py` (rewrites `standalone.html`) |
+| `index.html`, `solver.mjs`, `explain.mjs`, `cgmes.mjs` or `presets.json` | `python3 bundle.py` (rewrites `standalone.html`) |
 | `explain.mjs` or `solver.mjs` | `node explain_all.mjs` (rewrites `EXPLANATIONS.md` and `explanations.html`) |
 | anything | all tests above |
 
