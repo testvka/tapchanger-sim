@@ -6,6 +6,17 @@ Tabular), move the steps, change transformer and tap data, switch the parallel t
 operation, and choose how linear/tabular phase tap changers on end 2 are read (on their own winding, as in ENTSO-E's
 CGMES 3.0 data, or inverted, the convention of ENTSO-E's CGMES 2.4.15 conformity cases).
 
+Choose **CGMES 2.4.15** or **CGMES 3.0.0** in the export version selector, then click **Export CGMES** to download
+the current combination as a ZIP containing EQ, SSH, TP and SV XML files. The snapshot includes the source voltage,
+loads, transformer nameplate data, active parallel transformer, every tap changer and its table, controller settings,
+and the displayed voltages, power flows and tap positions after automatic control. At no load, loads and TP are
+omitted. Export works offline in `standalone.html` and requires a converged load flow.
+
+The selected phase-reading convention is preserved electrically: for an inverted linear/tabular phase tap changer
+on end 2 or 3, the writer negates its phase increment or table angles and reciprocates its table ratios. The files
+therefore describe the displayed state using the CGMES own-winding convention in either version; the original
+reading is recorded in the model description. Selecting an export version does not change the simulator's reading.
+
 The page shows the load flow (bus voltages, flows, losses), a single-line diagram, and a phasor chain with a waterfall
 chart that splits the voltage change into the part caused by each tap changer and the part caused by the network.
 Every tap changer can be put under automatic control: a ratio tap changer holds the voltage of B2 or B3, a phase
@@ -36,12 +47,16 @@ Files:
   64 CGMES 3.0 test cases. `solveWithControl()` adds the discrete tap control.
 - `presets.json`: the 64 cases (tap data and expected bus voltages), written by the test-case tools (not part of this repository).
 - `explain.mjs`: the explanation of a combination (`explain(model, result, presets)`), as HTML or Markdown.
+- `cgmes.mjs`: dependency-free CGMES 2.4.15 / 3.0.0 XML and ZIP writer (`createCgmesExport(model, result, options)`).
 - `explain_all.mjs`: `node explain_all.mjs` writes `EXPLANATIONS.md` and `explanations.html` for all 32 pairs.
-- `standalone.html`: `python3 bundle.py` bundles it from index.html, solver.mjs, explain.mjs and presets.json; do
+- `standalone.html`: `python3 bundle.py` bundles it from index.html, solver.mjs, explain.mjs, cgmes.mjs and presets.json; do
   not edit it.
 - `test_solver.mjs`: `node test_solver.mjs` solves every preset and compares it with the expected solution (78
   comparisons including the inverted readings; largest difference 1.1e-11 pu).
 - `test_control.mjs`: `node test_control.mjs`, 8 tests of the automatic control.
+- `test_cgmes.mjs`: `node test_cgmes.mjs` checks both export versions for all presets and readings, edited grids,
+  controllers and invalid inputs. Uses Python 3's standard-library ZIP/XML readers to validate archives, references,
+  profile dependencies, tap data, settings, voltages and power balance; compares impedances with the CGMES examples.
 - `smoke_ui.mjs`: `node smoke_ui.mjs [standalone.html]` runs the page script against a minimal mock DOM and renders
   all presets, including their explanation.
 - `test_explain.mjs`: `node test_explain.mjs` explains every preset (both readings, with and without TP), compares the

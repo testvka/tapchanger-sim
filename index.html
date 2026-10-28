@@ -23,6 +23,7 @@ input[type=range]:disabled{opacity:.5}
 .seg{display:flex;flex-wrap:wrap;gap:6px}
 .seg button{font:inherit;font-size:.9rem;color:#111;background:#fff;border:1px solid #bbb;border-radius:2px;padding:3px 10px;cursor:pointer}
 .seg button[aria-pressed="true"]{background:#eee;border-color:#555}
+.seg button:disabled{opacity:.5;cursor:default}
 button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #0b4f9c;outline-offset:1px}
 .end{padding-left:10px;border-left:2px solid #ddd;display:flex;flex-direction:column;gap:6px}
 .readout{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.8rem;color:#333;overflow-x:auto}
@@ -67,6 +68,9 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
         <h2>Start from</h2>
         <label>Example case<select id="preset"></select></label>
         <div class="seg" id="wseg"><button type="button" data-w="2">Two-winding</button><button type="button" data-w="3">Three-winding</button></div>
+        <label>CGMES export version<select id="cgmes-version"><option value="3.0.0">CGMES 3.0.0</option><option value="2.4.15">CGMES 2.4.15</option></select></label>
+        <div class="seg"><button type="button" id="export-cgmes" disabled>Export CGMES</button></div>
+        <p class="hint" id="export-status" role="status">ZIP with the current grid, tap changers and load-flow results.</p>
       </section>
       <section class="panel"><h2>Tap changers per end</h2>
         <p class="hint">Each end (winding) can carry one ratio tap changer and one phase tap changer, as in CGMES. Move a
@@ -105,7 +109,7 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
 </div>
 <script type="module">
 // Page script of the simulator. Where it sits: index.html loads it as a JavaScript module; it imports the load flow
-// from solver.mjs and the text explanation from explain.mjs. bundle step: standalone.html is this page with
+// from solver.mjs, the text explanation from explain.mjs and the CGMES writer from cgmes.mjs. standalone.html is this page with
 // the modules pasted in (bundle.py). Main steps: fetch presets.json -> openPreset() -> setModel() draws the input
 // controls (renderEnds, renderTxData, syncNetwork) -> run() solves the model and fills the result panels
 // (single-line diagram, phasor chain, waterfall, tables, explanation). Every input change calls run() again.
@@ -116,6 +120,7 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
 // of one end (each end can have one of each).
 import { defaultModel, solve, solveWithControl, tapValue, TAP_TYPES, abs, arg, div, mul, C } from "./solver.mjs";
 import { explain, renderHtml, presetModel as presetModelOf } from "./explain.mjs";
+import { createCgmesExport } from "./cgmes.mjs";
 
 const KVEND = { 1: 220, 2: 110, 3: 20 };       // rated kV of each transformer end
 // default data of a newly added tap changer = the data of the test cases (RTC data depend on the end)
@@ -131,6 +136,7 @@ const $ = (id) => document.getElementById(id);
 let presets = [];               // content of presets.json (the 64 test cases)
 let model = defaultModel(2);    // the current input data (see defaultModel in solver.mjs); changed by every input
 let showAngles = true;          // "Show angles on the diagram" checkbox
+let exportResult = null;        // last converged result of the current inputs
 
 /** A new tap changer of the given type ("RTC", "PTClin", ...) on end 1-3 with the default data (a copy). */
 function defaultTap(type, end) {
@@ -417,8 +423,13 @@ function waterfallSvg(chains) {
  * tap steps (automatic control); stores the model in localStorage.
  */
 function run() {
+  exportResult = null;
+  $("export-cgmes").disabled = true;
+  $("export-status").textContent = "ZIP with the current grid, tap changers and load-flow results.";
     let r;
-  try { r = solveWithControl(model); } catch (err) { $("status").className = "status bad"; $("status").textContent = "No solution: " + err.message; $("explain").textContent = "No load-flow solution, so no explanation."; return; }
+  try { r = solveWithControl(model); } catch (err) { $("status").className = "status bad"; $("status").textContent = "No solution: " + err.message; $("explain").textContent = "No load-flow solution, so no explanation."; $("export-status").textContent = "Export requires a converged load flow."; return; }
+  if (r.ok) { exportResult = r; $("export-cgmes").disabled = false; }
+  else $("export-status").textContent = "Export requires a converged load flow.";
   $("status").className = "status " + (r.ok ? "ok" : "bad");
   const ctlTxt = (r.controlState || []).length ? `; controllers: ${r.controlState.map((x) => `${x.tap} ${x.status}`).join(", ")} (${r.controlLog.length} tap moves)` : "";
   $("status").textContent = r.ok ? `Load flow converged in ${r.iterations} Newton iterations (max mismatch ${r.mismatchMva.toExponential(1)} MVA)${ctlTxt}`
@@ -458,6 +469,18 @@ function run() {
 }
 
 // ---------------------------------------------------------------- wiring
+$("export-cgmes").addEventListener("click", () => {
+  try {
+    const output = createCgmesExport(model, exportResult, { version: $("cgmes-version").value,
+      name: $("preset").value || "Custom tap changer model" });
+    const url = URL.createObjectURL(new Blob([output.bytes], { type: "application/zip" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = output.filename; link.hidden = true;
+    document.body.appendChild(link);
+    try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    $("export-status").textContent = `Exported ${output.filename}`;
+  } catch (err) { $("export-status").textContent = "Export failed: " + err.message; }
+});
 // Event handlers of the inputs outside the per-end panels. Switching 2W <-> 3W keeps the tap changers that still fit.
 document.querySelectorAll("#wseg button").forEach((b) => b.addEventListener("click", () => {
   const w = +b.dataset.w;
