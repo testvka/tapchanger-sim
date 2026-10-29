@@ -66,6 +66,7 @@ for case in manifest:
     assert len(elements("EQ", "PowerTransformer")) == 1 + bool(model["tp"]["on"] and not model["noLoad"])
     assert len(elements("EQ", "EnergyConsumer")) == (0 if model["noLoad"] else model["windings"] - 1)
     assert bool(roots["SSH"].findall(".//" + cim + "Equipment.inService")) != old
+    assert bool(roots["SV"].findall(".//" + cim + "SvStatus")) == old, "SvStatus only in 2.4.15 (ENTSO-E CGMES 3.0 SV constraints)"
     for v in elements("SV", "SvVoltage"):
         bus = definitions[reference(v, "SvVoltage.TopologicalNode")].findtext(cim + "IdentifiedObject.name")
         near(text(v, "SvVoltage.v"), case["buses"][bus]["vKv"])

@@ -49,7 +49,8 @@ export function createCgmesExport(model, result, { version = "3.0.0", now = new 
   function equipment(type, key, label, container, eq = {}, ssh = {}) {
     object("EQ", type, key, { "cim:Equipment.EquipmentContainer": ref(container), ...eq }, label);
     if (format.inService || Object.keys(ssh).length) object("SSH", type, key, { ...(format.inService ? { "cim:Equipment.inService": true } : {}), ...ssh });
-    object("SV", "SvStatus", "status " + key, { "cim:SvStatus.ConductingEquipment": ref(key), "cim:SvStatus.inService": true });
+    // CGMES 3.0 carries the status in SSH (Equipment.inService); its SV constraints allow SvStatus only for converters.
+    if (!format.inService) object("SV", "SvStatus", "status " + key, { "cim:SvStatus.ConductingEquipment": ref(key), "cim:SvStatus.inService": true });
   }
   function terminal(key, label, owner, end, bus, flow) {
     object("EQ", "Terminal", key, { "cim:ACDCTerminal.sequenceNumber": end, "cim:Terminal.ConductingEquipment": ref(owner),
