@@ -18,7 +18,7 @@ Short explanations of the words and abbreviations used in the code and the docum
 | end (transformer end) | one winding side of a transformer: PowerTransformerEnd with endNumber 1, 2 (or 3). |
 | end-2 rule ("keep" / "invert") | how linear and tabular phase tap changers on end 2 or 3 are read: on their own winding (keep, used for the SVs) or inverted (an older convention) (§6). |
 | ENTSO-E | European Network of Transmission System Operators for Electricity; publishes the CGMES rules and test data. |
-| EQ, SSH, TP, SV | the CGMES profiles (files): equipment, steady-state hypothesis (settings), topology, state variables (solved state). The simulator does not read CGMES files; its presets were made from the SVs of the 64 test cases. |
+| EQ, SSH, TP, SV, DL | the CGMES profiles (files): equipment, steady-state hypothesis (settings), topology, state variables (solved state), diagram layout (where the export draws each bus and device in a single-line diagram). The simulator does not read CGMES files; its presets were made from the SVs of the 64 test cases. |
 | hunting | a controller jumping back and forth because one step is larger than its band (§9). |
 | impedance (z) | resistance r + reactance x, in ohm: how strongly a device resists current. |
 | Jacobian | table of slopes used by Newton-Raphson: how each mismatch changes with each unknown (§7.2). |

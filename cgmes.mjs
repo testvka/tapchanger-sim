@@ -1,17 +1,17 @@
-// CGMES 2.4.15 / 3.0.0 snapshot of the simulator, packaged as EQ / SSH / TP / SV XML in one ZIP.
+// CGMES 2.4.15 / 3.0.0 snapshot of the simulator, packaged as EQ / SSH / TP / SV / DL XML in one ZIP.
 // No browser APIs or dependencies: the same writer runs in Node tests and in the offline standalone page.
 import { build, KV, TAP_TYPES } from "./solver.mjs";
 
 const MD = "http://iec.ch/TC57/61970-552/ModelDescription/1#";
 const FORMATS = {
   "3.0.0": { cim: "http://iec.ch/TC57/CIM100#", inService: true,
-    profiles: Object.fromEntries(Object.entries({ EQ: "CoreEquipment", SSH: "SteadyStateHypothesis", TP: "Topology", SV: "StateVariables" })
+    profiles: Object.fromEntries(Object.entries({ EQ: "CoreEquipment", SSH: "SteadyStateHypothesis", TP: "Topology", SV: "StateVariables", DL: "DiagramLayout" })
       .map(([p, title]) => [p, `http://iec.ch/TC57/ns/CIM/${title}-EU/3.0`])),
-    dependencies: { EQ: [], SSH: ["EQ"], TP: ["SSH"], SV: ["TP"] } },
+    dependencies: { EQ: [], SSH: ["EQ"], TP: ["SSH"], SV: ["TP"], DL: ["EQ"] } },
   "2.4.15": { cim: "http://iec.ch/TC57/2013/CIM-schema-cim16#", inService: false,
     profiles: { EQ: "http://entsoe.eu/CIM/EquipmentCore/3/1", SSH: "http://entsoe.eu/CIM/SteadyStateHypothesis/1/1",
-      TP: "http://entsoe.eu/CIM/Topology/4/1", SV: "http://entsoe.eu/CIM/StateVariables/4/1" },
-    dependencies: { EQ: [], SSH: ["EQ"], TP: ["EQ"], SV: ["SSH", "TP"] } }
+      TP: "http://entsoe.eu/CIM/Topology/4/1", SV: "http://entsoe.eu/CIM/StateVariables/4/1", DL: "http://entsoe.eu/CIM/DiagramLayout/3/1" },
+    dependencies: { EQ: [], SSH: ["EQ"], TP: ["EQ"], SV: ["SSH", "TP"], DL: ["EQ"] } }
 };
 const xml = (v) => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c]);
 const resource = (uri) => ({ resource: uri });
@@ -25,7 +25,7 @@ export function createCgmesExport(model, result, { version = "3.0.0", now = new 
   if (!result?.ok) throw new Error("A converged load flow is required for CGMES export.");
   const CIM = format.cim, kind = (value) => resource(CIM + value);
   const net = build(model), tx = net.elements.find((e) => e.name === "TX").data;
-  const ids = new Map(), parts = { EQ: [], SSH: [], TP: [], SV: [] };
+  const ids = new Map(), parts = { EQ: [], SSH: [], TP: [], SV: [], DL: [] };
   const id = (key) => { if (!ids.has(key)) ids.set(key, "_" + uuid()); return ids.get(key); };
   const ref = (key) => resource("#" + id(key));
   const timestamp = now.toISOString();
@@ -41,7 +41,7 @@ export function createCgmesExport(model, result, { version = "3.0.0", now = new 
     })).join("\n");
   }
   function object(profile, type, key, props, label) {
-    const define = profile === "EQ" || profile === "SV" || (profile === "TP" && type === "TopologicalNode");
+    const define = profile === "EQ" || profile === "SV" || profile === "DL" || (profile === "TP" && type === "TopologicalNode");
     const identified = label === undefined ? {} : { "cim:IdentifiedObject.mRID": id(key).slice(1), "cim:IdentifiedObject.name": label };
     parts[profile].push(`  <cim:${type} rdf:${define ? "ID" : "about"}="${define ? id(key) : "#" + id(key)}">\n`
       + properties({ ...identified, ...props }) + `\n  </cim:${type}>`);
@@ -171,6 +171,27 @@ export function createCgmesExport(model, result, { version = "3.0.0", now = new 
   }
   object("SV", "TopologicalIsland", "island", { "cim:TopologicalIsland.TopologicalNodes": net.names.map(ref),
     "cim:TopologicalIsland.AngleRefTopologicalNode": ref("B1") }, "Simulator island");
+
+  // Diagram layout: a single-line diagram, y pointing down. Buses are horizontal lines, equipment single points.
+  const n = model.windings, hasTp = model.tp.on && !model.noLoad, tpX = n === 2 ? 400 : 150;
+  const bus = n === 2 ? [[[150, 150], [450, 150]], [[150, 350], [450, 350]]]
+    : [[[100, 150], [500, 150]], [[100, 350], [280, 350]], [[320, 350], [500, 350]]];
+  const loadX = n === 2 ? [300] : [190, 410];
+  object("DL", "Diagram", "diagram", { "cim:Diagram.orientation": kind("OrientationKind.negative"),
+    "cim:Diagram.x1InitialView": 0, "cim:Diagram.y1InitialView": 0, "cim:Diagram.x2InitialView": 600, "cim:Diagram.y2InitialView": 550 },
+    "Single-line diagram");
+  function place(key, label, points, order) {
+    object("DL", "DiagramObject", "diagram object " + key, { "cim:DiagramObject.Diagram": ref("diagram"),
+      "cim:DiagramObject.IdentifiedObject": ref(key), "cim:DiagramObject.drawingOrder": order }, label);
+    points.forEach(([x, y], i) => object("DL", "DiagramObjectPoint", `diagram point ${key} ${i + 1}`, {
+      "cim:DiagramObjectPoint.DiagramObject": ref("diagram object " + key), "cim:DiagramObjectPoint.sequenceNumber": i + 1,
+      "cim:DiagramObjectPoint.xPosition": x, "cim:DiagramObjectPoint.yPosition": y }));
+  }
+  bus.forEach((points, i) => place("CN B" + (i + 1), "B" + (i + 1), points, 1));
+  place("Grid", "Grid", [[300, 50]], 2);
+  place("TX", "TX", [[300, 250]], 2);
+  if (hasTp) place("TP", "TP", [[tpX, 250]], 2);
+  if (!model.noLoad) loadX.forEach((x, i) => place("LD" + (i + 2), "LD" + (i + 2), [[x, 450]], 2));
 
   const headerIds = Object.fromEntries(Object.keys(parts).map((p) => [p, "urn:uuid:" + uuid()]));
   const files = {};

@@ -7,7 +7,7 @@ operation, and choose how linear/tabular phase tap changers on end 2 are read (o
 CGMES 3.0 data, or inverted, the convention of ENTSO-E's CGMES 2.4.15 conformity cases).
 
 Choose **CGMES 2.4.15** or **CGMES 3.0.0** in the export version selector, then click **Export CGMES** to download
-the current combination as a ZIP containing EQ, SSH, TP and SV XML files. The snapshot includes the source voltage,
+the current combination as a ZIP containing EQ, SSH, TP, SV and DL (diagram layout, a simple single-line diagram) XML files. The snapshot includes the source voltage,
 loads, transformer nameplate data, active parallel transformer, every tap changer and its table, controller settings,
 and the displayed voltages, power flows and tap positions after automatic control. At no load, loads and TP are
 omitted. Export works offline in `standalone.html` and requires a converged load flow.

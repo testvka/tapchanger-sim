@@ -23,9 +23,9 @@ for case in manifest:
     cim = "{" + ("http://iec.ch/TC57/2013/CIM-schema-cim16#" if old else "http://iec.ch/TC57/CIM100#") + "}"
     with zipfile.ZipFile(directory / case["filename"]) as archive:
         assert archive.testzip() is None
-        assert len(archive.namelist()) == 4
+        assert len(archive.namelist()) == 5
         roots = {name.split("_")[-2]: ET.fromstring(archive.read(name)) for name in archive.namelist()}
-    assert set(roots) == {"EQ", "SSH", "TP", "SV"}
+    assert set(roots) == {"EQ", "SSH", "TP", "SV", "DL"}
     definitions = {"#" + e.attrib[RDF + "ID"]: e for root in roots.values() for e in root if RDF + "ID" in e.attrib}
     header_ids = {p: root.find(MD + "FullModel").attrib[RDF + "about"] for p, root in roots.items()}
     for root in roots.values():
@@ -40,14 +40,14 @@ for case in manifest:
                     assert uri in definitions, (case["label"], uri)
                 elif uri.startswith("urn:uuid:"):
                     assert uri in header_ids.values()
-    expected_deps = {"EQ": [], "SSH": ["EQ"], "TP": ["EQ"] if old else ["SSH"], "SV": ["SSH", "TP"] if old else ["TP"]}
+    expected_deps = {"EQ": [], "SSH": ["EQ"], "TP": ["EQ"] if old else ["SSH"], "SV": ["SSH", "TP"] if old else ["TP"], "DL": ["EQ"]}
     for p, root in roots.items():
         header = root.find(MD + "FullModel")
         deps = [e.attrib[RDF + "resource"] for e in header.findall(MD + "Model.DependentOn")]
         assert deps == [header_ids[d] for d in expected_deps[p]]
         assert ' & <test> "ä"' in header.findtext(MD + "Model.description")
-        expected_profile = ({"EQ": "EquipmentCore/3/1", "SSH": "SteadyStateHypothesis/1/1", "TP": "Topology/4/1", "SV": "StateVariables/4/1"}[p]
-                            if old else {"EQ": "CoreEquipment", "SSH": "SteadyStateHypothesis", "TP": "Topology", "SV": "StateVariables"}[p] + "-EU/3.0")
+        expected_profile = ({"EQ": "EquipmentCore/3/1", "SSH": "SteadyStateHypothesis/1/1", "TP": "Topology/4/1", "SV": "StateVariables/4/1", "DL": "DiagramLayout/3/1"}[p]
+                            if old else {"EQ": "CoreEquipment", "SSH": "SteadyStateHypothesis", "TP": "Topology", "SV": "StateVariables", "DL": "DiagramLayout"}[p] + "-EU/3.0")
         assert header.findtext(MD + "Model.profile") == ("http://entsoe.eu/CIM/" if old else "http://iec.ch/TC57/ns/CIM/") + expected_profile
 
     def elements(profile, name):
@@ -67,6 +67,23 @@ for case in manifest:
     assert len(elements("EQ", "EnergyConsumer")) == (0 if model["noLoad"] else model["windings"] - 1)
     assert bool(roots["SSH"].findall(".//" + cim + "Equipment.inService")) != old
     assert bool(roots["SV"].findall(".//" + cim + "SvStatus")) == old, "SvStatus only in 2.4.15 (ENTSO-E CGMES 3.0 SV constraints)"
+    # Diagram layout: one diagram, one object per bus/equipment, each pointing at an EQ object and carrying coordinates.
+    diagrams = elements("DL", "Diagram")
+    assert len(diagrams) == 1 and diagrams[0].find(cim + "Diagram.orientation").attrib[RDF + "resource"].endswith("OrientationKind.negative")
+    drawn = {}
+    for o in elements("DL", "DiagramObject"):
+        assert reference(o, "DiagramObject.Diagram") == "#" + diagrams[0].attrib[RDF + "ID"]
+        target = definitions[reference(o, "DiagramObject.IdentifiedObject")]
+        assert target in roots["EQ"], "diagram objects reference equipment-profile objects"
+        points = [p for p in elements("DL", "DiagramObjectPoint") if reference(p, "DiagramObjectPoint.DiagramObject") == "#" + o.attrib[RDF + "ID"]]
+        assert len(points) == (2 if target.tag == cim + "ConnectivityNode" else 1)
+        for p in points:
+            assert math.isfinite(float(text(p, "DiagramObjectPoint.xPosition"))) and math.isfinite(float(text(p, "DiagramObjectPoint.yPosition")))
+        drawn[target.findtext(cim + "IdentifiedObject.name")] = len(points)
+    drawable = {"B%d" % i for i in range(1, model["windings"] + 1)} | {"Grid", "TX"}
+    drawable |= set() if model["noLoad"] else {"LD%d" % i for i in range(2, model["windings"] + 1)}
+    drawable |= {"TP"} if model["tp"]["on"] and not model["noLoad"] else set()
+    assert set(drawn) == drawable, (set(drawn), drawable)
     for v in elements("SV", "SvVoltage"):
         bus = definitions[reference(v, "SvVoltage.TopologicalNode")].findtext(cim + "IdentifiedObject.name")
         near(text(v, "SvVoltage.v"), case["buses"][bus]["vKv"])
