@@ -1,4 +1,4 @@
-"""Single-file simulator: standalone.html = index.html with solver.mjs, explain.mjs, cgmes.mjs and presets.json inlined (no module
+"""Single-file simulator: standalone.html = index.html with solver.mjs, explain.mjs, cgmes.mjs, scenarios.mjs and presets.json inlined (no module
 import, no fetch). It runs where the multi-file page cannot: opened from disk (file://) or from a server that does
 not serve .mjs as JavaScript.  Usage: python3 bundle.py
 
@@ -36,7 +36,7 @@ def module(src: str, name: str):
     "export " is left that is not at the start of a line (outside // comments). Careful: the word "export" followed
     by a space inside a /* ... */ comment also trips this check, so JSDoc comments must not contain it.
     """
-    names = re.findall(r"^export (?:const|let|function|class) (\w+)", src, re.M)
+    names = re.findall(r"^export (?:const|let|function|class|async function) (\w+)", src, re.M)
     body = re.sub(r"^export ", "", src, flags=re.M)
     assert "export " not in re.sub(r"//.*", "", body), f"unhandled export form in {name}"
     return names, body
@@ -72,6 +72,17 @@ def main():
     assert not re.search(r"^\s*import\b", c_body, re.M), "cgmes.mjs has a second import"
     h_cgmes, h_cgmes_line = imports(html, "cgmes.mjs")
     assert all(n in c_names for n in h_cgmes), set(h_cgmes) - set(c_names)
+    scen = read("scenarios.mjs")
+    sc_from = {m: imports(scen, m) for m in ("solver.mjs", "explain.mjs", "cgmes.mjs")}
+    for mod, names in (("solver.mjs", s_names), ("explain.mjs", e_names), ("cgmes.mjs", c_names)):
+        assert all(n in names for n in sc_from[mod][0]), (mod, set(sc_from[mod][0]) - set(names))
+    sc_body = scen
+    for _, line in sc_from.values():
+        sc_body = sc_body.replace(line, "")
+    sc_names, sc_body = module(sc_body, "scenarios.mjs")
+    assert not re.search(r"^\s*import\b", sc_body, re.M), "scenarios.mjs has another import"
+    h_scen, h_scen_line = imports(html, "scenarios.mjs")
+    assert all(n in sc_names for n in h_scen), set(h_scen) - set(sc_names)
     # "presetModel as presetModelOf" -> {"presetModel": "presetModelOf"}; a plain name maps to None
     alias = dict(re.match(r"(\w+)(?:\s+as\s+(\w+))?$", n).groups() for n in h_expl)
     assert all(n in s_names for n in h_solver), set(h_solver) - set(s_names)
@@ -89,10 +100,15 @@ def main():
               f"const {{ {', '.join(c_wanted)} }} = __solver;\n" + c_body
               + "\nreturn { " + ", ".join(c_names) + " };\n})();\n"
               f"const {{ {', '.join(h_cgmes)} }} = __cgmes;\n"
+              "// ---- scenarios.mjs, inlined ----\n"
+              "const __scenarios = (() => {\n"
+              + "".join(f"const {{ {', '.join(sc_from[m][0])} }} = {v};\n" for m, v in (("solver.mjs", "__solver"), ("explain.mjs", "__explain"), ("cgmes.mjs", "__cgmes")))
+              + sc_body + "\nreturn { " + ", ".join(sc_names) + " };\n})();\n"
+              f"const {{ {', '.join(h_scen)} }} = __scenarios;\n"
               "// ---- presets.json, inlined ----\n"
               f"const PRESETS_INLINE = {json.dumps(presets, separators=(',', ':'))};\n")
     html = html.replace(h_solver_line, safe(inline), 1).replace(h_expl_line + "\n", "", 1)
-    html = html.replace(h_cgmes_line + "\n", "", 1)
+    html = html.replace(h_cgmes_line + "\n", "", 1).replace(h_scen_line + "\n", "", 1)
     assert h_expl_line not in html
     assert not re.search(r"^\s*import\b", html, re.M), "standalone page still imports a module"
     a = 'fetch("./presets.json").then((r) => r.json())'

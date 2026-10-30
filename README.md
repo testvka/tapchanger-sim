@@ -12,6 +12,20 @@ loads, transformer nameplate data, active parallel transformer, every tap change
 and the displayed voltages, power flows and tap positions after automatic control. At no load, loads and TP are
 omitted. Export works offline in `standalone.html` and requires a converged load flow.
 
+### Scenario list (many CGMES cases at once)
+
+The **Scenario list** panel generates scenarios for all 32 tap-changer combinations: every tap changer of a scenario is
+moved by the same number of steps from neutral (default -12, 0, +12; any whole numbers from -12 to 12, limited to the
+changer's own low..high range, duplicates dropped), as an **open-circuit test** (TX alone, i0 0.10 %, p0 0.04 %) and at
+**50 % and 100 % load** (cos φ 0.95). 100 % is the rated power of the transformers (TX, plus TP when it is on; in the
+three-winding grid B3 takes the rating of winding 3), the load at which uk is defined: rated current flows and the voltage
+drop is uk. Scenarios with a phase shifter are also made with the parallel transformer TP switched on. With the defaults
+this gives 438 scenarios. **Generate all scenarios** solves them in one click, the table lists tap steps, TP and the bus
+voltages, and **Open** loads one into the simulator. **Add current simulator state** puts the state you built by hand on
+the list. **Export selected / Export all** download one big ZIP with a folder per scenario holding the CGMES ZIP
+(3.0.0, 2.4.15 or both), plus `scenarios.csv` as an overview. Scenarios without a load-flow solution are listed but not
+exported. The list is not kept when the page is reloaded.
+
 The selected phase-reading convention is preserved electrically: for an inverted linear/tabular phase tap changer
 on end 2 or 3, the writer negates its phase increment or table angles and reciprocates its table ratios. The files
 therefore describe the displayed state using the CGMES own-winding convention in either version; the original
@@ -48,8 +62,9 @@ Files:
 - `presets.json`: the 64 cases (tap data and expected bus voltages), written by the test-case tools (not part of this repository).
 - `explain.mjs`: the explanation of a combination (`explain(model, result, presets)`), as HTML or Markdown.
 - `cgmes.mjs`: dependency-free CGMES 2.4.15 / 3.0.0 XML and ZIP writer (`createCgmesExport(model, result, options)`).
+- `scenarios.mjs`: scenario generator and big-ZIP export (`generateScenarios`, `evaluate`, `exportScenarios`).
 - `explain_all.mjs`: `node explain_all.mjs` writes `EXPLANATIONS.md` and `explanations.html` for all 32 pairs.
-- `standalone.html`: `python3 bundle.py` bundles it from index.html, solver.mjs, explain.mjs, cgmes.mjs and presets.json; do
+- `standalone.html`: `python3 bundle.py` bundles it from index.html, solver.mjs, explain.mjs, cgmes.mjs, scenarios.mjs and presets.json; do
   not edit it.
 - `test_solver.mjs`: `node test_solver.mjs` solves every preset and compares it with the expected solution (78
   comparisons including the inverted readings; largest difference 1.1e-11 pu).
@@ -57,6 +72,8 @@ Files:
 - `test_cgmes.mjs`: `node test_cgmes.mjs` checks both export versions for all presets and readings, edited grids,
   controllers and invalid inputs. Uses Python 3's standard-library ZIP/XML readers to validate archives, references,
   profile dependencies, tap data, settings, voltages and power balance; compares impedances with the CGMES examples.
+- `test_scenarios.mjs`: `node test_scenarios.mjs` checks the generator (32 combinations, ranges, TP only with phase shifters,
+  rated load, power balance and non-negative losses of every scenario) and the big ZIP with Python's `zipfile`.
 - `smoke_ui.mjs`: `node smoke_ui.mjs [standalone.html]` runs the page script against a minimal mock DOM and renders
   all presets, including their explanation.
 - `test_explain.mjs`: `node test_explain.mjs` explains every preset (both readings, with and without TP), compares the

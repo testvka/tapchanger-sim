@@ -51,6 +51,8 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
 .hint{font-size:.85rem;color:#555}
 .contrib{padding-left:1.2em} .contrib li{font-size:.85rem}
 .explain h3{margin:.9em 0 .2em} .explain h3:first-child{margin-top:0} .explain p,.explain li{font-size:.9rem}
+.scroll.tall{max-height:420px;overflow:auto}
+#scn{margin-top:8px} #scn .row{margin:8px 0} #g-body td{font-size:.8rem;white-space:nowrap} #g-body tr.bad td{color:#a00}
 .tabtc tr.cur td{background:#fde68a;font-weight:600}
 .explain table{margin:.3em 0 .5em} .explain .seg{margin-top:.4em}
 </style></head><body>
@@ -106,6 +108,40 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
       <section class="panel"><h2>Explanation of this combination</h2><div id="explain" class="explain"></div></section>
     </div>
   </div>
+  <section class="panel" id="scn">
+    <h2>Scenario list: generate, review and export many CGMES cases</h2>
+    <p class="hint">Generates every tap-changer combination of the 32 test cases at several tap positions (all tap
+      changers of a scenario move by the same number of steps from neutral, limited to their own range), as open-circuit
+      test and at several loads; scenarios with a phase shifter also get the parallel transformer TP. 100 % load is the
+      rated power of the transformers, the load at which uk is defined. You can also add the current simulator state
+      to the list and export any selection as one big ZIP with one CGMES ZIP per scenario.</p>
+    <div class="row">
+      <label>Tap offsets from neutral (steps, −12…12)<input type="text" id="g-offsets" value="-12, 0, 12"></label>
+      <label>Loads in % of rated power<input type="text" id="g-loads" value="50, 100"></label>
+      <label>Power factor cos φ<input type="number" id="g-pf" value="0.95" step="0.01" min="0.5" max="1"></label>
+    </div>
+    <label class="chk"><input type="checkbox" id="g-oc" checked> Open-circuit test (TX alone, magnetizing branch i0 0.10 %, p0 0.04 %)</label>
+    <label class="chk"><input type="checkbox" id="g-tp" checked> Phase-shifter scenarios also with the parallel transformer TP switched on</label>
+    <div class="seg">
+      <button type="button" id="g-run">Generate all scenarios</button>
+      <button type="button" id="g-add">Add current simulator state</button>
+      <button type="button" id="g-clear">Clear list</button>
+    </div>
+    <p class="hint" id="g-status" role="status">The list is empty.</p>
+    <div id="g-list" hidden>
+      <div class="row">
+        <label>Filter (text in the id)<input type="text" id="g-filter" placeholder="e.g. PTClin, OC, TP"></label>
+        <label>CGMES version in the export<select id="g-version"><option value="3.0.0">CGMES 3.0.0</option><option value="2.4.15">CGMES 2.4.15</option><option value="both">both versions</option></select></label>
+      </div>
+      <div class="seg">
+        <button type="button" id="g-all">Select shown</button>
+        <button type="button" id="g-none">Select none</button>
+        <button type="button" id="g-exp-sel">Export selected</button>
+        <button type="button" id="g-exp-all">Export all</button>
+      </div>
+      <div class="scroll tall"><table id="g-table"><thead><tr><th></th><th>Id</th><th>Test</th><th>Tap steps</th><th>TP</th><th>Result at no-slack buses</th><th></th></tr></thead><tbody id="g-body"></tbody></table></div>
+    </div>
+  </section>
 </div>
 <script type="module">
 // Page script of the simulator. Where it sits: index.html loads it as a JavaScript module; it imports the load flow
@@ -121,6 +157,7 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
 import { defaultModel, solve, solveWithControl, tapValue, TAP_TYPES, abs, arg, div, mul, C } from "./solver.mjs";
 import { explain, renderHtml, presetModel as presetModelOf } from "./explain.mjs";
 import { createCgmesExport } from "./cgmes.mjs";
+import { DEFAULT_OPTIONS, generateScenarios, makeScenario, evaluate, describeBuses, stepsText, exportScenarios } from "./scenarios.mjs";
 
 const KVEND = { 1: 220, 2: 110, 3: 20 };       // rated kV of each transformer end
 // default data of a newly added tap changer = the data of the test cases (RTC data depend on the end)
@@ -506,6 +543,80 @@ $("angles").addEventListener("change", (ev) => { showAngles = ev.target.checked;
 $("rule").addEventListener("change", (ev) => { model.end2Rule = ev.target.value; run(); });
 $("preset").addEventListener("change", (ev) => { openPreset(ev.target.value); });
 if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("hashchange", () => openPreset(decodeURIComponent(location.hash.slice(1))));
+
+// ---------------------------------------------------------------- scenario list
+let scenarios = [];             // generated and added scenarios (see scenarios.mjs)
+const picked = new Set();       // ids of the selected rows
+let customCount = 0;
+const visible = () => { const q = $("g-filter").value.trim().toLowerCase(); return scenarios.filter((s) => !q || s.id.toLowerCase().includes(q)); };
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+function renderScenarios() {
+  $("g-list").hidden = !scenarios.length;
+  const shown = visible();
+  $("g-body").innerHTML = shown.map((s) => `<tr class="${s.summary && !s.summary.ok ? "bad" : ""}"><td><input type="checkbox" data-id="${esc(s.id)}"${picked.has(s.id) ? " checked" : ""} aria-label="select ${esc(s.id)}"></td>`
+    + `<td>${esc(s.id)}</td><td>${esc(s.kind || "")}</td><td>${esc(stepsText(s))}</td><td>${s.model.tp.on && !s.model.noLoad ? "on" : "off"}</td><td>${esc(describeBuses(s))}</td>`
+    + `<td><button type="button" data-open="${esc(s.id)}">Open</button> <button type="button" data-del="${esc(s.id)}">Remove</button></td></tr>`).join("");
+  const n = picked.size, bad = scenarios.filter((s) => s.summary && !s.summary.ok).length;
+  $("g-status").textContent = scenarios.length ? `${scenarios.length} scenarios (${shown.length} shown), ${n} selected${bad ? `, ${bad} without a solution (not exported)` : ""}.` : "The list is empty.";
+  $("g-exp-sel").textContent = `Export selected (${n})`;
+  $("g-exp-sel").disabled = !n;
+}
+/** Numbers from a comma-separated text, or null when something is not a number. */
+const numbers = (t) => { const a = t.split(/[,; ]+/).filter(Boolean).map(Number); return a.length && a.every(Number.isFinite) ? a : null; };
+$("g-run").addEventListener("click", async () => {
+  const offsets = numbers($("g-offsets").value), loads = numbers($("g-loads").value) || [], pf = +$("g-pf").value;
+  if (!offsets || offsets.some((k) => !Number.isInteger(k) || Math.abs(k) > 12)) { $("g-status").textContent = "Tap offsets must be whole numbers from −12 to 12, e.g. −12, 0, 12."; return; }
+  if (loads.some((x) => x <= 0 || x > 200) || !(pf >= 0.5 && pf <= 1)) { $("g-status").textContent = "Loads must be 1–200 % and cos φ 0.5–1."; return; }
+  const kept = scenarios.filter((s) => s.group === "custom");
+  const made = generateScenarios(presets, { ...DEFAULT_OPTIONS, offsets, loads, powerFactor: pf, openCircuit: $("g-oc").checked, parallelTp: $("g-tp").checked });
+  $("g-run").disabled = true;
+  for (const [i, s] of made.entries()) {
+    evaluate(s);
+    if (i % 25 === 24) { $("g-status").textContent = `Solving ${i + 1} / ${made.length} ...`; await new Promise((r) => setTimeout(r)); }
+  }
+  $("g-run").disabled = false;
+  scenarios = [...made, ...kept];
+  picked.clear();
+  renderScenarios();
+});
+$("g-add").addEventListener("click", () => {
+  const m = structuredClone(model);
+  const s = makeScenario(m, { id: `custom${++customCount}_${($("preset").value || "edited").slice(0, 24)}`, group: "custom", combo: $("preset").value, kind: m.noLoad ? "open circuit" : "custom load" });
+  evaluate(s);
+  if (!s.summary.ok) { customCount--; $("g-status").textContent = "The current state has no load-flow solution; it was not added."; return; }
+  scenarios.push(s); picked.add(s.id);
+  renderScenarios();
+});
+$("g-clear").addEventListener("click", () => { scenarios = []; picked.clear(); renderScenarios(); });
+$("g-filter").addEventListener("input", renderScenarios);
+$("g-all").addEventListener("click", () => { visible().forEach((s) => picked.add(s.id)); renderScenarios(); });
+$("g-none").addEventListener("click", () => { picked.clear(); renderScenarios(); });
+$("g-body").addEventListener("click", (ev) => {
+  const t = ev.target;
+  if (t.dataset.id !== undefined && t.tagName === "INPUT") { t.checked ? picked.add(t.dataset.id) : picked.delete(t.dataset.id); renderScenarios(); }
+  else if (t.dataset.open !== undefined) {
+    const s = scenarios.find((x) => x.id === t.dataset.open);
+    if (s) { $("preset").value = ""; setModel(structuredClone(s.model)); window.scrollTo?.(0, 0); }
+  } else if (t.dataset.del !== undefined) { scenarios = scenarios.filter((x) => x.id !== t.dataset.del); picked.delete(t.dataset.del); renderScenarios(); }
+});
+async function exportList(list) {
+  if (!list.length) return;
+  const v = $("g-version").value, versions = v === "both" ? ["3.0.0", "2.4.15"] : [v];
+  $("g-status").textContent = `Exporting ${list.length} scenarios ...`;
+  try {
+    const out = await exportScenarios(list, { versions, onProgress: (i, n) => { $("g-status").textContent = `Exporting ${i} / ${n} ...`; } });
+    const url = URL.createObjectURL(new Blob([out.bytes], { type: "application/zip" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = out.filename; link.hidden = true;
+    document.body.appendChild(link);
+    try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    renderScenarios();
+    $("g-status").textContent = `Exported ${out.filename}: ${out.exported} scenarios${out.skipped.length ? `, ${out.skipped.length} without a solution left out` : ""}.`;
+  } catch (err) { $("g-status").textContent = "Export failed: " + err.message; }
+}
+$("g-exp-sel").addEventListener("click", () => exportList(scenarios.filter((s) => picked.has(s.id))));
+$("g-exp-all").addEventListener("click", () => exportList(scenarios));
+renderScenarios();
 
 // Start-up: load the presets, fill the selector, open the case named in the URL (#CODE) or TC08 by default.
 // If presets.json cannot be loaded (e.g. the page was opened from disk), start with a custom model.
