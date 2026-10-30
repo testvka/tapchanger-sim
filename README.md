@@ -12,6 +12,24 @@ loads, transformer nameplate data, active parallel transformer, every tap change
 and the displayed voltages, power flows and tap positions after automatic control. At no load, loads and TP are
 omitted. Export works offline in `standalone.html` and requires a converged load flow.
 
+### Import
+
+**Import CGMES** (left panel) reads a CGMES 2.4.15 or 3.0.0 ZIP, or loose XML files (select EQ, SSH, TP and SV together), and
+opens it in the simulator. Several cases, such as a scenario archive from the export, are added to the scenario list
+instead. Files from this simulator come back unchanged (same load flow to 1e-15 pu). Other files are accepted only when
+all elements are ones the simulator models, otherwise nothing is imported and every problem is listed:
+- one `ExternalNetworkInjection` at 220 kV (voltage from its regulating control, else from the SV voltage);
+- one `PowerTransformer` TX with 2 or 3 windings of 220 / 110 / 20 kV, with ratedS, r, x, g, b (uk, ur, i0, p0 are
+  recomputed); optionally a second 2-winding 220 / 110 kV transformer without tap changers as TP;
+- `RatioTapChanger` and `PhaseTapChanger` Linear / Symmetrical / Asymmetrical / Tabular on TX (one of each kind per end,
+  steps from SSH, tables complete), with optional `TapChangerControl` (voltage at a transformer bus, or active power at end 1);
+- `EnergyConsumer` on the 110 / 20 kV buses (p, q from SSH);
+- no other equipment, nothing out of service, no disconnected terminal.
+
+If the file has an SV, its voltages are compared with the simulator's load flow of the imported grid and a difference
+above 0.1 % of nominal is reported as a warning. Phase tap data are read in the CGMES own-winding reading. ZIPs
+compressed by other tools need a browser with `DecompressionStream`.
+
 ### Scenario list (many CGMES cases at once)
 
 The **Scenario list** panel generates scenarios for all 32 tap-changer combinations: every tap changer of a scenario is
@@ -62,9 +80,10 @@ Files:
 - `presets.json`: the 64 cases (tap data and expected bus voltages), written by the test-case tools (not part of this repository).
 - `explain.mjs`: the explanation of a combination (`explain(model, result, presets)`), as HTML or Markdown.
 - `cgmes.mjs`: dependency-free CGMES 2.4.15 / 3.0.0 XML and ZIP writer (`createCgmesExport(model, result, options)`).
+- `cgmes_import.mjs`: CGMES reader (`importFiles`, `importCgmes`, `unzip`); `test_import.mjs` round-trips every preset, edited grid, controller and scenario and checks that invalid files are rejected.
 - `scenarios.mjs`: scenario generator and big-ZIP export (`generateScenarios`, `evaluate`, `exportScenarios`).
 - `explain_all.mjs`: `node explain_all.mjs` writes `EXPLANATIONS.md` and `explanations.html` for all 32 pairs.
-- `standalone.html`: `python3 bundle.py` bundles it from index.html, solver.mjs, explain.mjs, cgmes.mjs, scenarios.mjs and presets.json; do
+- `standalone.html`: `python3 bundle.py` bundles it from index.html, solver.mjs, explain.mjs, cgmes.mjs, scenarios.mjs, cgmes_import.mjs and presets.json; do
   not edit it.
 - `test_solver.mjs`: `node test_solver.mjs` solves every preset and compares it with the expected solution (78
   comparisons including the inverted readings; largest difference 1.1e-11 pu).

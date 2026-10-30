@@ -73,6 +73,8 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
         <label>CGMES export version<select id="cgmes-version"><option value="3.0.0">CGMES 3.0.0</option><option value="2.4.15">CGMES 2.4.15</option></select></label>
         <div class="seg"><button type="button" id="export-cgmes" disabled>Export CGMES</button></div>
         <p class="hint" id="export-status" role="status">ZIP with the current grid, tap changers and load-flow results.</p>
+        <label>Import CGMES (ZIP or XML files, also a scenario archive)<input type="file" id="import-cgmes" accept=".zip,.xml" multiple></label>
+        <p class="hint" id="import-status" role="status">Files from this simulator come back unchanged; other CGMES files are accepted when they contain only what the simulator models (see README).</p>
       </section>
       <section class="panel"><h2>Tap changers per end</h2>
         <p class="hint">Each end (winding) can carry one ratio tap changer and one phase tap changer, as in CGMES. Move a
@@ -157,6 +159,7 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
 import { defaultModel, solve, solveWithControl, tapValue, TAP_TYPES, abs, arg, div, mul, C } from "./solver.mjs";
 import { explain, renderHtml, presetModel as presetModelOf } from "./explain.mjs";
 import { createCgmesExport } from "./cgmes.mjs";
+import { importFiles } from "./cgmes_import.mjs";
 import { DEFAULT_OPTIONS, generateScenarios, makeScenario, evaluate, describeBuses, stepsText, exportScenarios } from "./scenarios.mjs";
 
 const KVEND = { 1: 220, 2: 110, 3: 20 };       // rated kV of each transformer end
@@ -617,6 +620,36 @@ async function exportList(list) {
 $("g-exp-sel").addEventListener("click", () => exportList(scenarios.filter((s) => picked.has(s.id))));
 $("g-exp-all").addEventListener("click", () => exportList(scenarios));
 renderScenarios();
+
+// ---------------------------------------------------------------- import
+$("import-cgmes").addEventListener("change", async (ev) => {
+  const input = ev.target, files = [...(input.files || [])];
+  if (!files.length) return;
+  const status = $("import-status");
+  status.textContent = "Reading ...";
+  try {
+    const { cases, errors } = await importFiles(await Promise.all(files.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) }))));
+    const lines = errors.map((e) => `${e.name} not imported: ${e.problems.join(" ")}`);
+    if (cases.length === 1 && !errors.length) {
+      const c = cases[0];
+      $("preset").value = "";
+      setModel(c.model);
+      lines.push(`Imported ${c.name} (CGMES ${c.version}), ${c.model.windings}-winding, ${c.model.taps.length} tap changer(s)${c.svDeviation === null ? "" : `; its SV matches the load flow to ${c.svDeviation.toExponential(1)} pu`}.`);
+    } else if (cases.length) {
+      for (const c of cases) {
+        let id = "imp_" + c.name.replace(/[^\w.-]+/g, "_").slice(0, 60), k = 1;
+        while (scenarios.some((s) => s.id === id + (k > 1 ? "_" + k : ""))) k++;
+        const s = makeScenario(c.model, { id: id + (k > 1 ? "_" + k : ""), group: "custom", kind: "imported" });
+        evaluate(s); scenarios.push(s);
+      }
+      renderScenarios();
+      lines.push(`Added ${cases.length} imported scenarios to the scenario list.`);
+    }
+    for (const c of cases) lines.push(...c.warnings.map((w) => `${c.name}: ${w}`));
+    status.textContent = lines.join(" ") || "Nothing imported.";
+  } catch (err) { status.textContent = "Import failed: " + err.message; }
+  input.value = "";
+});
 
 // Start-up: load the presets, fill the selector, open the case named in the URL (#CODE) or TC08 by default.
 // If presets.json cannot be loaded (e.g. the page was opened from disk), start with a custom model.

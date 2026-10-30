@@ -1,4 +1,4 @@
-"""Single-file simulator: standalone.html = index.html with solver.mjs, explain.mjs, cgmes.mjs, scenarios.mjs and presets.json inlined (no module
+"""Single-file simulator: standalone.html = index.html with solver.mjs, explain.mjs, cgmes.mjs, scenarios.mjs, cgmes_import.mjs and presets.json inlined (no module
 import, no fetch). It runs where the multi-file page cannot: opened from disk (file://) or from a server that does
 not serve .mjs as JavaScript.  Usage: python3 bundle.py
 
@@ -81,6 +81,12 @@ def main():
         sc_body = sc_body.replace(line, "")
     sc_names, sc_body = module(sc_body, "scenarios.mjs")
     assert not re.search(r"^\s*import\b", sc_body, re.M), "scenarios.mjs has another import"
+    imp = read("cgmes_import.mjs")
+    i_wanted, i_line = imports(imp, "solver.mjs")
+    assert all(n in s_names for n in i_wanted), set(i_wanted) - set(s_names)
+    i_names, i_body = module(imp.replace(i_line, ""), "cgmes_import.mjs")
+    h_imp, h_imp_line = imports(html, "cgmes_import.mjs")
+    assert all(n in i_names for n in h_imp), set(h_imp) - set(i_names)
     h_scen, h_scen_line = imports(html, "scenarios.mjs")
     assert all(n in sc_names for n in h_scen), set(h_scen) - set(sc_names)
     # "presetModel as presetModelOf" -> {"presetModel": "presetModelOf"}; a plain name maps to None
@@ -105,10 +111,15 @@ def main():
               + "".join(f"const {{ {', '.join(sc_from[m][0])} }} = {v};\n" for m, v in (("solver.mjs", "__solver"), ("explain.mjs", "__explain"), ("cgmes.mjs", "__cgmes")))
               + sc_body + "\nreturn { " + ", ".join(sc_names) + " };\n})();\n"
               f"const {{ {', '.join(h_scen)} }} = __scenarios;\n"
+              "// ---- cgmes_import.mjs, inlined ----\n"
+              "const __import = (() => {\n"
+              f"const {{ {', '.join(i_wanted)} }} = __solver;\n" + i_body
+              + "\nreturn { " + ", ".join(i_names) + " };\n})();\n"
+              f"const {{ {', '.join(h_imp)} }} = __import;\n"
               "// ---- presets.json, inlined ----\n"
               f"const PRESETS_INLINE = {json.dumps(presets, separators=(',', ':'))};\n")
     html = html.replace(h_solver_line, safe(inline), 1).replace(h_expl_line + "\n", "", 1)
-    html = html.replace(h_cgmes_line + "\n", "", 1).replace(h_scen_line + "\n", "", 1)
+    html = html.replace(h_cgmes_line + "\n", "", 1).replace(h_scen_line + "\n", "", 1).replace(h_imp_line + "\n", "", 1)
     assert h_expl_line not in html
     assert not re.search(r"^\s*import\b", html, re.M), "standalone page still imports a module"
     a = 'fetch("./presets.json").then((r) => r.json())'
