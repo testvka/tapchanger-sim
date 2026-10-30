@@ -210,7 +210,7 @@ export function createCgmesExport(model, result, { version = "3.0.0", now = new 
 
 // Stored (uncompressed) ZIP, with CRC-32 and a central directory. XML snapshots are small; this keeps the page
 // offline and avoids a ZIP dependency or CompressionStream (whose raw-deflate support differs by browser).
-function zip(files) {
+export function zip(files) {
   const encoder = new TextEncoder(), entries = [], chunks = [];
   let offset = 0;
   const crc32 = (bytes) => {
@@ -227,7 +227,7 @@ function zip(files) {
     return data;
   }
   for (const [filename, content] of Object.entries(files)) {
-    const name = encoder.encode(filename), data = encoder.encode(content), crc = crc32(data);
+    const name = encoder.encode(filename), data = typeof content === "string" ? encoder.encode(content) : content, crc = crc32(data);
     const local = header(30, [[0, 0x04034b50, 4], [4, 20], [6, 0x800], [12, 33], [14, crc, 4],
       [18, data.length, 4], [22, data.length, 4], [26, name.length]]);
     chunks.push(local, name, data);

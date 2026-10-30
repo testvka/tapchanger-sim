@@ -52,6 +52,8 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
 .hint{font-size:.85rem;color:#555}
 .contrib{padding-left:1.2em} .contrib li{font-size:.85rem}
 .explain h3{margin:.9em 0 .2em} .explain h3:first-child{margin-top:0} .explain p,.explain li{font-size:.9rem}
+.scroll.tall{max-height:420px;overflow:auto}
+#scn{margin-top:8px} #scn .row{margin:8px 0} #g-body td{font-size:.8rem;white-space:nowrap} #g-body tr.bad td{color:#a00}
 .tabtc tr.cur td{background:#fde68a;font-weight:600}
 .explain table{margin:.3em 0 .5em} .explain .seg{margin-top:.4em}
 </style></head><body>
@@ -72,6 +74,8 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
         <label>CGMES export version<select id="cgmes-version"><option value="3.0.0">CGMES 3.0.0</option><option value="2.4.15">CGMES 2.4.15</option></select></label>
         <div class="seg"><button type="button" id="export-cgmes" disabled>Export CGMES</button></div>
         <p class="hint" id="export-status" role="status">ZIP with the current grid, tap changers and load-flow results.</p>
+        <label>Import CGMES (ZIP or XML files, also a scenario archive)<input type="file" id="import-cgmes" accept=".zip,.xml" multiple></label>
+        <p class="hint" id="import-status" role="status">Files from this simulator come back unchanged; other CGMES files are accepted when they contain only what the simulator models (see README).</p>
       </section>
       <section class="panel"><h2>Tap changers per end</h2>
         <p class="hint">Each end (winding) can carry one ratio tap changer and one phase tap changer, as in CGMES. Move a
@@ -107,6 +111,40 @@ svg .bar-rt{fill:var(--rt)} svg .bar-ph{fill:var(--ph)} svg .bar-net{fill:var(--
       <section class="panel"><h2>Explanation of this combination</h2><div id="explain" class="explain"></div></section>
     </div>
   </div>
+  <section class="panel" id="scn">
+    <h2>Scenario list: generate, review and export many CGMES cases</h2>
+    <p class="hint">Generates every tap-changer combination of the 32 test cases at several tap positions (all tap
+      changers of a scenario move by the same number of steps from neutral, limited to their own range), as open-circuit
+      test and at several loads; scenarios with a phase shifter also get the parallel transformer TP. 100 % load is the
+      rated power of the transformers, the load at which uk is defined. You can also add the current simulator state
+      to the list and export any selection as one big ZIP with one CGMES ZIP per scenario.</p>
+    <div class="row">
+      <label>Tap offsets from neutral (steps, −12…12)<input type="text" id="g-offsets" value="-12, 0, 12"></label>
+      <label>Loads in % of rated power<input type="text" id="g-loads" value="50, 100"></label>
+      <label>Power factor cos φ<input type="number" id="g-pf" value="0.95" step="0.01" min="0.5" max="1"></label>
+    </div>
+    <label class="chk"><input type="checkbox" id="g-oc" checked> Open-circuit test (TX alone, magnetizing branch i0 0.10 %, p0 0.04 %)</label>
+    <label class="chk"><input type="checkbox" id="g-tp" checked> Phase-shifter scenarios also with the parallel transformer TP switched on</label>
+    <div class="seg">
+      <button type="button" id="g-run">Generate all scenarios</button>
+      <button type="button" id="g-add">Add current simulator state</button>
+      <button type="button" id="g-clear">Clear list</button>
+    </div>
+    <p class="hint" id="g-status" role="status">The list is empty.</p>
+    <div id="g-list" hidden>
+      <div class="row">
+        <label>Filter (text in the id)<input type="text" id="g-filter" placeholder="e.g. PTClin, OC, TP"></label>
+        <label>CGMES version in the export<select id="g-version"><option value="3.0.0">CGMES 3.0.0</option><option value="2.4.15">CGMES 2.4.15</option><option value="both">both versions</option></select></label>
+      </div>
+      <div class="seg">
+        <button type="button" id="g-all">Select shown</button>
+        <button type="button" id="g-none">Select none</button>
+        <button type="button" id="g-exp-sel">Export selected</button>
+        <button type="button" id="g-exp-all">Export all</button>
+      </div>
+      <div class="scroll tall"><table id="g-table"><thead><tr><th></th><th>Id</th><th>Test</th><th>Tap steps</th><th>TP</th><th>Result at no-slack buses</th><th></th></tr></thead><tbody id="g-body"></tbody></table></div>
+    </div>
+  </section>
 </div>
 <script type="module">
 // Page script of the simulator. Where it sits: index.html loads it as a JavaScript module; it imports the load flow
@@ -1230,7 +1268,7 @@ function zip(files) {
     return data;
   }
   for (const [filename, content] of Object.entries(files)) {
-    const name = encoder.encode(filename), data = encoder.encode(content), crc = crc32(data);
+    const name = encoder.encode(filename), data = typeof content === "string" ? encoder.encode(content) : content, crc = crc32(data);
     const local = header(30, [[0, 0x04034b50, 4], [4, 20], [6, 0x800], [12, 33], [14, crc, 4],
       [18, data.length, 4], [22, data.length, 4], [26, name.length]]);
     chunks.push(local, name, data);
@@ -1247,9 +1285,471 @@ function zip(files) {
   return bytes;
 }
 
-return { createCgmesExport };
+return { createCgmesExport, zip };
 })();
 const { createCgmesExport } = __cgmes;
+// ---- scenarios.mjs, inlined ----
+const __scenarios = (() => {
+const { defaultModel, solveWithControl } = __solver;
+const { presetModel } = __explain;
+const { createCgmesExport, zip } = __cgmes;
+// Automatic scenario generator: every tap-changer combination of the 32 test cases (presets.json) at several tap
+// positions, at open circuit and at several loads, with and without the parallel transformer TP. Each scenario is a
+// simulator model; it is solved on demand and exported as a CGMES ZIP, many of them in one big ZIP.
+// No browser APIs: the same code runs in Node tests and in the page.
+
+
+
+
+/** Generator settings (all can be overridden):
+ *  offsets: steps from neutral, every tap changer is moved by this many steps (limited to its own low..high, so a
+ *    changer with fewer steps stops at its end; duplicates that result are dropped). -12..+12 is the usual range.
+ *  openCircuit: add the open-circuit test (TX alone, other ends open, magnetizing branch i0 0.10 %, p0 0.04 %).
+ *  loads: load levels in % of the rated power S of the transformers (100 = the load at which uk is defined: rated
+ *    current flows, voltage drop = uk).
+ *  parallelTp: scenarios with a phase tap changer are also made with the parallel transformer TP switched on.
+ *  powerFactor: cos(phi) of the loads (inductive). */
+const DEFAULT_OPTIONS = { offsets: [-12, 0, 12], openCircuit: true, loads: [50, 100], parallelTp: true, powerFactor: 0.95 };
+
+const PHASE = ["PTClin", "PTCsym", "PTCasym", "PTCtab"];
+const clamp = (x, lo, hi) => Math.min(Math.max(x, lo), hi);
+const sign = (k) => (k < 0 ? "m" : "p") + String(Math.abs(k)).padStart(2, "0");
+
+/** Load in MW / Mvar for the given % of the rated power: TX, plus TP when it is on, supply B2 (three-winding: B3 takes
+ *  the rating of winding 3, B2 the rest of winding 1). Example: 2W, TP off, 100 %, cos 0.95: 250 MVA = 237.5 MW + 78.06 Mvar. */
+function loadFor(model, percent, powerFactor = 0.95) {
+  const tp = model.tp.on ? model.tp.S : 0, s = model.windings === 3 ? model.tx3.S : [model.tx2.S];
+  const mva = model.windings === 3 ? { B2: Math.min(s[1], s[0] - s[2]) + tp, B3: s[2] } : { B2: s[0] + tp };
+  const k = percent / 100, sin = Math.sqrt(1 - powerFactor * powerFactor);
+  const out = { B2: { p: 0, q: 0 }, B3: { p: 0, q: 0 } };
+  for (const [bus, v] of Object.entries(mva)) out[bus] = { p: v * k * powerFactor, q: v * k * sin };
+  return out;
+}
+
+/** One scenario object from a model: { id, group, combo, kind, tp, offset, model, summary, result }. */
+function makeScenario(model, { id, group = "custom", combo = "", kind = "", offset = null } = {}) {
+  return { id, group, combo, kind, offset, windings: model.windings, model: structuredClone(model), result: null, summary: null };
+}
+
+/** Scenarios of all combinations in presets.json (the loaded "TC" cases give the tap changers). Order: combination,
+ *  tap position, open circuit, loads, TP off / on. Scenarios with the same tap steps, load and TP are listed once. */
+function generateScenarios(presets, options = {}) {
+  const o = { ...DEFAULT_OPTIONS, ...options }, list = [];
+  for (const p of presets.filter((x) => !x.noload)) {
+    const seen = new Set();
+    for (const k of o.offsets) {
+      const base = presetModel(p, defaultModel);
+      for (const t of base.taps) t.step = clamp(t.neutral + k, t.low, t.high);
+      const steps = base.taps.map((t) => t.step).join(",");
+      const hasPst = base.taps.some((t) => PHASE.includes(t.type));
+      const tag = `${p.code}_${sign(k)}`;
+      const variants = [];
+      if (o.openCircuit) variants.push({ kind: "open circuit", short: "OC", noLoad: true, tp: false });
+      for (const pct of o.loads) for (const tp of hasPst && o.parallelTp ? [false, true] : [false]) {
+        variants.push({ kind: pct === 100 ? "rated load (uk basis)" : `${pct} % load`, short: `L${pct}`, noLoad: false, tp, pct });
+      }
+      for (const v of variants) {
+        const key = `${steps}|${v.short}|${v.tp}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const m = structuredClone(base);
+        m.noLoad = v.noLoad;
+        m.tp.on = v.tp;
+        if (v.noLoad) for (const t of [m.tx2, m.tx3]) { t.i0 = 0.10; t.p0 = 0.04; }
+        else Object.assign(m.loads, loadFor(m, v.pct, o.powerFactor));
+        list.push(makeScenario(m, { id: `${tag}_${v.short}${v.tp ? "_TP" : ""}`, group: "generated", combo: p.code, kind: v.kind, offset: k }));
+      }
+    }
+  }
+  return list;
+}
+
+/** Solve one scenario (tap steps of automatic controllers move) and store result and summary. Returns the scenario. */
+function evaluate(s) {
+  try { s.result = solveWithControl(s.model); } catch (err) { s.result = { ok: false, error: err.message }; }
+  const r = s.result;
+  s.summary = r.ok ? { ok: true, buses: Object.fromEntries(Object.entries(r.buses).map(([n, b]) => [n, { kv: b.vKv, deg: b.angleDeg }])),
+    pTx: r.flows["TX T1"]?.p, iterations: r.iterations } : { ok: false };
+  return s;
+}
+
+/** "B2 109.21 kV -0.55°, B3 ..." for lists. */
+function describeBuses(s) {
+  if (!s.summary) return "not solved";
+  if (!s.summary.ok) return "no solution";
+  return Object.entries(s.summary.buses).filter(([n]) => n !== "B1")
+    .map(([n, b]) => `${n} ${b.kv.toFixed(2)} kV ${b.deg >= 0 ? "+" : ""}${b.deg.toFixed(2)}°`).join(", ");
+}
+
+/** Tap steps as text: "RTC end 1: 14, PTClin end 2: 16". */
+const stepsText = (s) => s.model.taps.map((t) => `${t.type} end ${t.end}: ${t.step}`).join(", ");
+
+const csv = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+const wait = () => new Promise((r) => setTimeout(r, 0));
+
+/** The selected scenarios as one big ZIP: <id>/<CGMES zip> for each version, plus scenarios.csv (an overview, also of
+ *  the scenarios that could not be solved and are not in the archive). Solves scenarios that were not solved yet.
+ *  @param {object[]} list scenarios. @param {{versions?:string[], now?:Date, onProgress?:function}} opts
+ *  @returns {Promise<{filename:string, bytes:Uint8Array, exported:number, skipped:string[]}>} */
+async function exportScenarios(list, { versions = ["3.0.0"], now = new Date(), onProgress } = {}) {
+  const files = {}, rows = [["id", "combination", "kind", "windings", "tap steps", "parallel TP", "status", "B2 kV", "B2 deg", "B3 kV", "B3 deg", "P into TX at B1 MW"]];
+  const skipped = [];
+  let exported = 0;
+  for (const [i, s] of list.entries()) {
+    if (!s.summary) evaluate(s);
+    const b = s.summary.buses || {};
+    rows.push([s.id, s.combo, s.kind, s.windings, stepsText(s), s.model.tp.on && !s.model.noLoad ? "on" : "off",
+      s.summary.ok ? "ok" : "no solution - not exported", b.B2 ? b.B2.kv : "", b.B2 ? b.B2.deg : "", b.B3 ? b.B3.kv : "", b.B3 ? b.B3.deg : "", s.summary.pTx ?? ""]);
+    if (s.summary.ok) {
+      for (const version of versions) {
+        const out = createCgmesExport(s.model, s.result, { version, now, name: s.id });
+        files[`${s.id}/${out.filename}`] = out.bytes;
+      }
+      exported++;
+    } else skipped.push(s.id);
+    if (i % 10 === 9) { onProgress?.(i + 1, list.length); await wait(); }
+  }
+  files["scenarios.csv"] = rows.map((r) => r.map(csv).join(",")).join("\n") + "\n";
+  const stamp = now.toISOString().replace(/[-:]/g, "").slice(0, 13) + "Z";
+  return { filename: `tapchanger_scenarios_${stamp}_${exported}.zip`, bytes: zip(files), exported, skipped };
+}
+
+return { DEFAULT_OPTIONS, loadFor, makeScenario, generateScenarios, evaluate, describeBuses, stepsText, exportScenarios };
+})();
+const { DEFAULT_OPTIONS, generateScenarios, makeScenario, evaluate, describeBuses, stepsText, exportScenarios } = __scenarios;
+// ---- cgmes_import.mjs, inlined ----
+const __import = (() => {
+const { defaultModel, solveWithControl, KV } = __solver;
+// CGMES import: reads a CGMES 2.4.15 / 3.0.0 package (EQ, SSH, TP, SV XML in a ZIP, or loose XML files) and rebuilds the
+// simulator model, when the elements are the ones the simulator can represent: an external network injection at 220 kV,
+// one power transformer TX with 2 or 3 windings of 220 / 110 / 20 kV and its ratio / phase tap changers, optionally a
+// plain parallel transformer TP (220 / 110 kV) and energy consumers on the 110 / 20 kV buses. Anything else is reported
+// and nothing is imported (no silent guessing). Files written by the exporter in cgmes.mjs come back unchanged.
+// No browser APIs except DecompressionStream (for compressed ZIPs written by other tools).
+
+
+class ImportError extends Error {
+  constructor(problems) { super(problems.join(" ")); this.problems = problems; }
+}
+
+// ---------------------------------------------------------------- ZIP
+/** Files of a ZIP as { name: Uint8Array }. Supports stored and deflated entries (no ZIP64, no encryption). */
+async function unzip(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), decoder = new TextDecoder();
+  let end = bytes.length - 22;
+  while (end >= 0 && view.getUint32(end, true) !== 0x06054b50) end--;
+  if (end < 0) throw new ImportError(["Not a ZIP archive (no end-of-directory record)."]);
+  const count = view.getUint16(end + 10, true);
+  let p = view.getUint32(end + 16, true);
+  const out = {};
+  for (let i = 0; i < count; i++) {
+    if (view.getUint32(p, true) !== 0x02014b50) throw new ImportError(["Damaged ZIP central directory."]);
+    const method = view.getUint16(p + 10, true), size = view.getUint32(p + 20, true);
+    const nameLength = view.getUint16(p + 28, true), extra = view.getUint16(p + 30, true), comment = view.getUint16(p + 32, true);
+    const local = view.getUint32(p + 42, true), name = decoder.decode(bytes.subarray(p + 46, p + 46 + nameLength));
+    p += 46 + nameLength + extra + comment;
+    if (name.endsWith("/")) continue;
+    const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+    const raw = bytes.subarray(start, start + size);
+    if (method === 0) out[name] = raw;
+    else if (method === 8) {
+      if (typeof DecompressionStream === "undefined") throw new ImportError([`${name} is compressed and this browser cannot unpack it.`]);
+      out[name] = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+    } else throw new ImportError([`${name}: unsupported ZIP compression method ${method}.`]);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- RDF/XML
+const unescapeXml = (s) => s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (m, e) => {
+  if (e[0] === "#") return String.fromCodePoint(e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : +e.slice(1));
+  return { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" }[e.toLowerCase()];
+});
+/** One identifier form for "#_abc", "_abc" and "urn:uuid:abc". */
+const norm = (s) => s.replace(/^#/, "").replace(/^urn:uuid:/, "").replace(/^_/, "");
+
+/** Objects of one CIM RDF/XML file: [{ type, id, props: { "Class.prop": [{ text } | { ref, raw }] } }], and the CIM namespace. */
+function parseRdf(text) {
+  const objects = [], tagRe = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[([\s\S]*?)\]\]>|<(\/?)([\w:.-]+)((?:\s+[\w:.-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>|([^<]+)/g;
+  const attrRe = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  const local = (n) => n.slice(n.indexOf(":") + 1);
+  let depth = 0, cur = null, prop = null, cim = "", m;
+  while ((m = tagRe.exec(text))) {
+    const [, cdata, closing, tag, attrString, selfClosing, chars] = m;
+    if (tag) {
+      if (closing) {
+        depth--;
+        if (depth === 1) cur = null;
+        else if (depth === 2) prop = null;
+        continue;
+      }
+      const attrs = {};
+      for (const a of (attrString || "").matchAll(attrRe)) attrs[a[1]] = unescapeXml(a[2] ?? a[3]);
+      if (depth === 0 && tag.endsWith("RDF")) {
+        for (const [k, v] of Object.entries(attrs)) if (k.startsWith("xmlns") && /CIM|cim/.test(v) && !/ModelDescription/.test(v)) cim = cim || v;
+      }
+      if (depth === 1) {
+        const id = attrs["rdf:ID"] ?? attrs["rdf:about"];
+        cur = { type: local(tag), id: id === undefined ? undefined : norm(id), props: {} };
+        objects.push(cur);
+      } else if (depth === 2 && cur) {
+        const entry = attrs["rdf:resource"] !== undefined ? { ref: norm(attrs["rdf:resource"]), raw: attrs["rdf:resource"] } : { text: "" };
+        (cur.props[local(tag)] ||= []).push(entry);
+        prop = entry;
+      }
+      if (!selfClosing) depth++;
+      else if (depth === 2) prop = null;
+    } else if (chars !== undefined && prop && "text" in prop) prop.text += unescapeXml(chars);
+    else if (cdata !== undefined && prop && "text" in prop) prop.text += cdata;
+  }
+  return { objects, cim };
+}
+
+// ---------------------------------------------------------------- model from objects
+const CONTAINERS = new Set(["FullModel"]);
+/** Types the simulator reads or can safely ignore. Equipment (has Equipment.EquipmentContainer) of any other type is an error. */
+const KNOWN_EQUIPMENT = new Set(["ExternalNetworkInjection", "PowerTransformer", "EnergyConsumer"]);
+const TAP_KIND = { RatioTapChanger: "RTC", PhaseTapChangerLinear: "PTClin", PhaseTapChangerSymmetrical: "PTCsym", PhaseTapChangerAsymmetrical: "PTCasym", PhaseTapChangerTabular: "PTCtab" };
+
+/** Rebuild the simulator model from the texts of the XML files of one CGMES package.
+ *  @param {string[]} texts RDF/XML contents. @returns {{model:object, version:string, warnings:string[], svDeviation:number|null}}
+ *  @throws {ImportError} with every problem found (the list is in .problems). */
+function importCgmes(texts) {
+  const problems = [], warnings = [], byId = new Map(), all = [];
+  let cim = "";
+  for (const text of texts) {
+    const parsed = parseRdf(text);
+    cim = cim || parsed.cim;
+    for (const o of parsed.objects) {
+      if (CONTAINERS.has(o.type) || o.id === undefined) continue;
+      let t = byId.get(o.id);
+      if (!t) { t = { type: o.type, id: o.id, props: {} }; byId.set(o.id, t); all.push(t); }
+      for (const [k, v] of Object.entries(o.props)) (t.props[k] ||= []).push(...v);
+    }
+  }
+  const version = /CIM100/.test(cim) ? "3.0.0" : /cim16/.test(cim) ? "2.4.15" : "";
+  if (!version) throw new ImportError(["No CGMES data found: the files use neither the CIM100 (CGMES 3.0) nor the cim16 (CGMES 2.4.15) namespace."]);
+  const ofType = (...types) => all.filter((o) => types.includes(o.type));
+  const find = (o, suffix) => { for (const k of Object.keys(o.props)) if (k.endsWith("." + suffix)) return o.props[k][0]; return undefined; };
+  const num = (o, s) => { const v = find(o, s); return v && v.text !== undefined && v.text.trim() !== "" ? +v.text : undefined; };
+  const bool = (o, s) => { const v = find(o, s); return v && v.text !== undefined ? v.text.trim() === "true" : undefined; };
+  const ref = (o, s) => { const v = find(o, s); return v && v.ref ? byId.get(v.ref) : undefined; };
+  const enumOf = (o, s) => { const v = find(o, s); return v && v.raw ? v.raw.slice(v.raw.lastIndexOf(".") + 1) : undefined; };
+  const label = (o) => (find(o, "name") ? find(o, "name").text : o.id);
+  const bad = (m) => problems.push(m);
+
+  // equipment the simulator cannot represent
+  for (const o of all) {
+    if (find(o, "EquipmentContainer") && !KNOWN_EQUIPMENT.has(o.type)) bad(`Unsupported equipment ${o.type} "${label(o)}": the simulator has one transformer, one parallel transformer, loads and the grid.`);
+    if (bool(o, "inService") === false) bad(`${o.type} "${label(o)}" is out of service.`);
+    if (o.type === "SvStatus" && bool(o, "inService") === false) bad(`${label(ref(o, "ConductingEquipment") || o)} is out of service (SvStatus).`);
+    if (o.type === "Terminal" && bool(o, "connected") === false) bad(`Terminal "${label(o)}" is not connected.`);
+  }
+
+  // which bus (1 = 220 kV, 2 = 110, 3 = 20) a terminal is at: from the base voltage of its connectivity node / topological node
+  const busNumber = (kv) => [1, 2, 3].find((n) => Math.abs(kv - KV[n]) < 0.5);
+  const kvOfTerminal = (t) => {
+    const cn = ref(t, "ConnectivityNode"), tn = ref(t, "TopologicalNode");
+    const viaCn = cn && ref(cn, "ConnectivityNodeContainer");
+    const bv = (viaCn && ref(viaCn, "BaseVoltage")) || (tn && ref(tn, "BaseVoltage"));
+    return bv ? num(bv, "nominalVoltage") : undefined;
+  };
+  const terminalsOf = (eq) => ofType("Terminal").filter((t) => ref(t, "ConductingEquipment") === eq);
+  const busOfTerminal = (t) => { const kv = kvOfTerminal(t); return kv === undefined ? undefined : busNumber(kv); };
+
+  // transformers
+  const power = ofType("PowerTransformer");
+  const endsOf = (pt) => ofType("PowerTransformerEnd").filter((e) => ref(e, "PowerTransformer") === pt).sort((a, b) => num(a, "endNumber") - num(b, "endNumber"));
+  const tapsAll = ofType(...Object.keys(TAP_KIND), "PhaseTapChanger", "PhaseTapChangerNonLinear", "TapChanger");
+  const hasTaps = (pt) => tapsAll.some((t) => endsOf(pt).includes(ref(t, "TransformerEnd")));
+  let tx, tp;
+  if (!power.length) bad("No PowerTransformer found.");
+  else if (power.length === 1) tx = power[0];
+  else if (power.length === 2) {
+    const named = power.find((p) => label(p) === "TX");
+    tx = power.find((p) => endsOf(p).length === 3) || power.find(hasTaps) || named;
+    tp = power.find((p) => p !== tx);
+    if (!tx) bad("Cannot tell which of the two transformers is TX: give the main transformer the name TX, or tap changers.");
+  } else bad(`${power.length} power transformers found; the simulator has TX and at most one parallel transformer TP.`);
+
+  const model = defaultModel(2);
+  model.end2Rule = "keep";
+  const txEnds = tx ? endsOf(tx) : [];
+  if (tx && ![2, 3].includes(txEnds.length)) bad(`Transformer "${label(tx)}" has ${txEnds.length} windings; the simulator supports 2 or 3.`);
+  if (tx && [2, 3].includes(txEnds.length)) {
+    model.windings = txEnds.length;
+    const w = txEnds.length, d = defaultModel(w);
+    Object.assign(model, { tx2: d.tx2, tx3: d.tx3, loads: d.loads });
+    const ends = txEnds.map((e, i) => {
+      const o = { r: num(e, "r") ?? 0, x: num(e, "x") ?? 0, g: num(e, "g") ?? 0, b: num(e, "b") ?? 0, u: num(e, "ratedU"), s: num(e, "ratedS") };
+      if (num(e, "endNumber") !== i + 1) bad(`${label(tx)}: winding numbers must be 1..${w}.`);
+      if (!(Math.abs(o.u - KV[i + 1]) < 0.01 * KV[i + 1])) bad(`${label(tx)} winding ${i + 1}: rated voltage ${o.u} kV; the simulator uses ${KV[i + 1]} kV.`);
+      if (!(o.s > 0)) bad(`${label(tx)} winding ${i + 1}: ratedS is missing.`);
+      const term = ref(e, "Terminal"), n = term && busOfTerminal(term);
+      if (n !== undefined && n !== i + 1) bad(`${label(tx)} winding ${i + 1} is connected to a ${KV[n]} kV node; expected ${KV[i + 1]} kV.`);
+      return o;
+    });
+    if (!problems.length) {
+      const u1 = 220;
+      // magnetizing branch referred to 220 kV and S of winding 1: g = p0/100 S/U^2, b = -sqrt(i0^2 - p0^2)/100 S/U^2
+      const g = ends.reduce((a, e, i) => a + e.g * (e.u / u1) ** 2, 0), b = ends.reduce((a, e) => a + e.b * (e.u / u1) ** 2, 0);
+      const p0 = g * u1 * u1 / ends[0].s * 100, i0 = Math.hypot(b * u1 * u1 / ends[0].s * 100, p0);
+      if (w === 2) {
+        // series impedance referred to 220 kV
+        const k = (u1 / ends[1].u) ** 2, r = ends[0].r + ends[1].r * k, x = ends[0].x + ends[1].x * k, S = ends[0].s;
+        const base = u1 * u1 / S;
+        Object.assign(model.tx2, { S, uk: Math.hypot(r, x) / base * 100, ur: r / base * 100, i0, p0 });
+        if (Math.abs(ends[1].s - S) > 1e-6 * S) warnings.push("The ratings of the two windings differ; the rating of winding 1 is used.");
+      } else {
+        // star impedances per kV^2 -> pair impedances on the smaller rating of the pair -> uk, ur
+        const z = ends.map((e) => [e.r / (e.u * e.u), e.x / (e.u * e.u)]);
+        const pair = (a, b2, sa, sb) => { const re = z[a][0] + z[b2][0], im = z[a][1] + z[b2][1], m = Math.min(sa, sb);
+          return { uk: Math.hypot(re, im) * m * 100, ur: re * m * 100 }; };
+        const S = ends.map((e) => e.s), p12 = pair(0, 1, S[0], S[1]), p13 = pair(0, 2, S[0], S[2]), p23 = pair(1, 2, S[1], S[2]);
+        Object.assign(model.tx3, { S, uk12: p12.uk, uk13: p13.uk, uk23: p23.uk, ur12: p12.ur, ur13: p13.ur, ur23: p23.ur, i0, p0 });
+      }
+    }
+  }
+
+  // parallel transformer
+  if (tp) {
+    const ends = endsOf(tp);
+    const ok = ends.length === 2 && ends.every((e, i) => num(e, "endNumber") === i + 1 && Math.abs(num(e, "ratedU") - KV[i + 1]) < 0.01 * KV[i + 1]);
+    if (!ok) bad(`Transformer "${label(tp)}" must have 2 windings of 220 / 110 kV to be the parallel transformer TP.`);
+    else if (hasTaps(tp)) bad(`The parallel transformer "${label(tp)}" has a tap changer; only TX can have tap changers.`);
+    else {
+      const k = (220 / num(ends[1], "ratedU")) ** 2, r = (num(ends[0], "r") ?? 0) + (num(ends[1], "r") ?? 0) * k, x = (num(ends[0], "x") ?? 0) + (num(ends[1], "x") ?? 0) * k;
+      const S = num(ends[0], "ratedS"), base = 220 * 220 / S;
+      Object.assign(model.tp, { on: true, S, uk: Math.hypot(r, x) / base * 100, ur: r / base * 100 });
+    }
+  } else model.tp.on = false;
+
+  // grid: external network injection at 220 kV, voltage from its regulating control (or from the SV of B1)
+  const grids = ofType("ExternalNetworkInjection");
+  if (grids.length !== 1) bad(`${grids.length} external network injections found; the simulator needs exactly one (the grid at 220 kV).`);
+  else {
+    const t = terminalsOf(grids[0])[0];
+    if (!t || busOfTerminal(t) !== 1) bad("The external network injection must be at the 220 kV node.");
+    const rc = ref(grids[0], "RegulatingControl");
+    let kv = rc && num(rc, "targetValue");
+    if (rc && kv !== undefined && enumOf(rc, "targetValueUnitMultiplier") === "M") kv = undefined;
+    if (kv === undefined) {
+      const sv = ofType("SvVoltage").find((v) => { const n = ref(v, "TopologicalNode"); const bv = n && ref(n, "BaseVoltage"); return bv && Math.abs(num(bv, "nominalVoltage") - 220) < 0.5; });
+      kv = sv && num(sv, "v");
+      if (kv !== undefined) warnings.push("The grid has no voltage regulating control; the source voltage is taken from the SV voltage at 220 kV.");
+    }
+    if (!(kv > 0)) bad("The source voltage (regulating control target of the grid, or SV voltage at 220 kV) is missing.");
+    else model.vSourceKv = kv;
+  }
+
+  // loads
+  const consumers = ofType("EnergyConsumer");
+  model.loads = { B2: { p: 0, q: 0 }, B3: { p: 0, q: 0 } };
+  for (const c of consumers) {
+    const t = terminalsOf(c)[0], n = t && busOfTerminal(t);
+    if (n === undefined || n < 2 || n > model.windings) bad(`Load "${label(c)}" must be at the 110 kV bus${model.windings === 3 ? " or the 20 kV bus" : ""}.`);
+    else if (num(c, "p") === undefined || num(c, "q") === undefined) bad(`Load "${label(c)}" has no p / q (SSH).`);
+    else { model.loads["B" + n].p += num(c, "p"); model.loads["B" + n].q += num(c, "q"); }
+  }
+  model.noLoad = !consumers.length && !tp;
+  if (model.noLoad) for (const t of [model.tx2, model.tx3]) t.autoMag = false;
+
+  // tap changers
+  model.taps = [];
+  for (const o of tapsAll) {
+    const end = ref(o, "TransformerEnd");
+    if (!end) { bad(`Tap changer "${label(o)}" has no transformer end.`); continue; }
+    if (!txEnds.includes(end)) { if (tp && endsOf(tp).includes(end)) continue; bad(`Tap changer "${label(o)}" is on a transformer the simulator does not model.`); continue; }
+    const type = TAP_KIND[o.type];
+    if (!type) { bad(`Tap changer type ${o.type} ("${label(o)}") is not supported; use ratio, linear, symmetrical, asymmetrical or tabular.`); continue; }
+    const tc = { end: num(end, "endNumber"), type, low: num(o, "lowStep"), high: num(o, "highStep"), neutral: num(o, "neutralStep") };
+    tc.step = num(o, "step") ?? num(o, "normalStep");
+    if (![tc.low, tc.high, tc.neutral, tc.step].every(Number.isInteger) || tc.low > tc.high || tc.step < tc.low || tc.step > tc.high || tc.neutral < tc.low || tc.neutral > tc.high) {
+      bad(`Tap changer "${label(o)}": steps must be whole numbers with low <= neutral, step <= high.`); continue;
+    }
+    if (type === "RTC") tc.svi = num(o, "stepVoltageIncrement");
+    else if (type === "PTClin") tc.deg = num(o, "stepPhaseShiftIncrement");
+    else if (type === "PTCsym" || type === "PTCasym") { tc.vsi = num(o, "voltageStepIncrement"); if (type === "PTCasym") tc.theta = num(o, "windingConnectionAngle"); }
+    else {
+      const table = ref(o, "PhaseTapChangerTable");
+      const points = table ? ofType("PhaseTapChangerTablePoint").filter((p) => ref(p, "PhaseTapChangerTable") === table) : [];
+      tc.table = points.map((p) => ({ step: num(p, "step"), angle: num(p, "angle"), ratio: num(p, "ratio") })).sort((a, b) => a.step - b.step);
+      for (let s = tc.low; s <= tc.high; s++) if (!tc.table.some((p) => p.step === s && p.ratio > 0 && Number.isFinite(p.angle))) { bad(`Tap changer "${label(o)}": the table has no valid point for step ${s}.`); break; }
+    }
+    const needed = { RTC: ["svi"], PTClin: ["deg"], PTCsym: ["vsi"], PTCasym: ["vsi", "theta"], PTCtab: [] }[type];
+    if (needed.some((k) => !Number.isFinite(tc[k]))) { bad(`Tap changer "${label(o)}": ${needed.join(", ")} missing.`); continue; }
+    if (model.taps.some((x) => x.end === tc.end && (x.type === "RTC") === (type === "RTC"))) { bad(`End ${tc.end} has two ${type === "RTC" ? "ratio" : "phase"} tap changers.`); continue; }
+    const control = ref(o, "TapChangerControl");
+    if (control) {
+      const voltage = enumOf(control, "mode") === "voltage", power = enumOf(control, "mode") === "activePower", t = ref(control, "Terminal");
+      const txTerm = t && txEnds.map((e) => ref(e, "Terminal")).indexOf(t), n = t && (txTerm >= 0 ? txTerm + 1 : busOfTerminal(t));
+      const value = num(control, "targetValue"), deadband = num(control, "targetDeadband") ?? 0;
+      if (voltage && n >= 1 && n <= model.windings && value > 0) tc.control = { on: !!(bool(control, "enabled") && bool(o, "controlEnabled") !== false), target: "V:B" + n, value, deadband };
+      else if (power && txTerm === 0 && Number.isFinite(value)) tc.control = { on: !!(bool(control, "enabled") && bool(o, "controlEnabled") !== false), target: "P:TX", value, deadband };
+      else bad(`Tap changer control of "${label(o)}" is not supported: voltage at a transformer bus or active power into TX end 1 only.`);
+    }
+    model.taps.push(tc);
+  }
+  model.taps.sort((a, b) => a.end - b.end || (a.type === "RTC" ? -1 : 1));
+  if (problems.length) throw new ImportError(problems);
+
+  // compare with the SV of the file
+  let svDeviation = null;
+  try {
+    const r = solveWithControl(structuredClone(model));
+    if (!r.ok) warnings.push("The imported grid has no load-flow solution.");
+    else for (const v of ofType("SvVoltage")) {
+      const n = ref(v, "TopologicalNode"), bv = n && ref(n, "BaseVoltage"), kv = bv && num(bv, "nominalVoltage"), b = kv && busNumber(kv);
+      if (!b || !r.buses["B" + b]) continue;
+      svDeviation = Math.max(svDeviation ?? 0, Math.abs(r.buses["B" + b].vKv - num(v, "v")) / KV[b]);
+    }
+  } catch (err) { warnings.push("Load flow failed: " + err.message); }
+  if (svDeviation !== null && svDeviation > 1e-3) warnings.push(`The voltages in the file's SV differ from the simulator's load flow by up to ${(svDeviation * 100).toFixed(2)} % of nominal.`);
+  return { model, version, warnings, svDeviation };
+}
+
+// ---------------------------------------------------------------- files
+const isZip = (b) => b.length > 3 && b[0] === 0x50 && b[1] === 0x4b;
+const decode = (b) => new TextDecoder().decode(b);
+const stem = (n) => n.replace(/^.*[\\/]/, "").replace(/\.(zip|xml)$/i, "");
+
+/** Imports selected files: CGMES ZIPs, loose XML files (together they are one case), or an archive of scenario ZIPs as
+ *  written by the scenario exporter (every nested ZIP is a case; where a scenario has both versions, 3.0.0 is used).
+ *  @param {{name:string, bytes:Uint8Array}[]} inputs
+ *  @returns {Promise<{cases:{name:string, model:object, version:string, warnings:string[], svDeviation:number|null}[], errors:{name:string, problems:string[]}[]}>} */
+async function importFiles(inputs) {
+  const cases = [], errors = [], loose = [];
+  const pack = (name, texts) => {
+    try { cases.push({ name, ...importCgmes(texts) }); }
+    catch (err) { errors.push({ name, problems: err instanceof ImportError ? err.problems : [err.message] }); }
+  };
+  async function archive(name, bytes, depth) {
+    let files;
+    try { files = await unzip(bytes); } catch (err) { errors.push({ name, problems: err.problems || [err.message] }); return; }
+    const xml = Object.entries(files).filter(([n]) => /\.xml$/i.test(n)), nested = Object.entries(files).filter(([n]) => /\.zip$/i.test(n));
+    if (xml.length) pack(name, xml.map(([, b]) => decode(b)));
+    else if (nested.length && depth < 2) {
+      const before = cases.length;
+      for (const [n, b] of nested) {
+        const parts = n.split("/");
+        await archive(parts.length > 1 ? parts[parts.length - 2] : stem(parts[0]), b, depth + 1);
+      }
+      // one scenario folder holding several versions: keep 3.0.0
+      const added = cases.splice(before);
+      for (const c of added) if (c.version === "3.0.0" || !added.some((d) => d.name === c.name && d.version === "3.0.0")) cases.push(c);
+    } else errors.push({ name, problems: ["The ZIP contains no CGMES XML files."] });
+  }
+  for (const { name, bytes } of inputs) {
+    if (isZip(bytes)) await archive(name, bytes, 0);
+    else loose.push({ name, text: decode(bytes) });
+  }
+  if (loose.length) pack(loose.length === 1 ? stem(loose[0].name) : stem(loose[0].name).replace(/_(EQ|SSH|TP|SV|DL)_\d+$/, ""), loose.map((l) => l.text));
+  return { cases, errors };
+}
+
+return { ImportError, unzip, importCgmes, importFiles };
+})();
+const { importFiles } = __import;
 // ---- presets.json, inlined ----
 const PRESETS_INLINE = [{"code":"TC01_3W_RTC1_PTCtab2","row":1,"windings":3,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Three-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[109.20966539958809,0.27296061020754997],"B3":[19.44499807255474,-4.155990040833445]},"expected_inverted":{"B1":[225.0,0.0],"B2":[108.08781634901372,-5.124105470164483],"B3":[19.5613475123574,-1.339444431609652]},"expected_tx_p1":199.00713027895287},{"code":"TC02_3W_RTC1","row":2,"windings":3,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25}],"title":"Three-winding transformer: RatioTapChanger on end 1","expected":{"B1":[225.0,0.0],"B2":[108.78062526307636,-2.4062929964754582],"B3":[19.52134073769949,-2.7392932117713475]},"expected_inverted":null,"expected_tx_p1":100.01483931516407},{"code":"TC03_3W_RTC1_RTC2","row":3,"windings":3,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Three-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[106.17143328497411,-2.4119469167645113],"B3":[19.741496147194198,-2.72159847980098]},"expected_inverted":null,"expected_tx_p1":100.81478823199845},{"code":"TC04_3W_RTC1_RTC2_RTC3","row":4,"windings":3,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":3,"type":"RTC","low":1,"high":5,"neutral":3,"step":5,"svi":2.5}],"title":"Three-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2 + RatioTapChanger on end 3","expected":{"B1":[225.0,0.0],"B2":[106.17143328497411,-2.411946916764513],"B3":[20.72857095455391,-2.721598479800981]},"expected_inverted":null,"expected_tx_p1":100.81478823199849},{"code":"TC05_2W_RTC1_RTC2","row":5,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Two-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[105.99813546600281,-2.757090071779203]},"expected_inverted":null,"expected_tx_p1":98.5110169605566},{"code":"TC06_2W_RTC1_PTCasym2","row":6,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[110.64930214928147,-1.0315525321309376]},"expected_inverted":null,"expected_tx_p1":160.89324108438691},{"code":"TC07_2W_RTC1","row":7,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25}],"title":"Two-winding transformer: RatioTapChanger on end 1","expected":{"B1":[225.0,0.0],"B2":[108.60176223700849,-2.7532218518883464]},"expected_inverted":null,"expected_tx_p1":97.34227882379038},{"code":"TC08_2W_RTC1_PTClin2","row":8,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[108.5149318909958,-0.54898582529836]},"expected_inverted":{"B1":[225.0,0.0],"B2":[108.51493189099577,-4.966121153552351]},"expected_tx_p1":178.4009565136664},{"code":"TC09_3W_PTCtab1","row":9,"windings":3,"noload":false,"taps":[{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Three-winding transformer: PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[110.14329765902818,-5.080756787344701],"B3":[19.922564745720482,-6.765270029407806]},"expected_inverted":null,"expected_tx_p1":0.27805241662930513},{"code":"TC10_2W_PTCtab1","row":10,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Two-winding transformer: PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[109.97542298658206,-5.422330244695051]},"expected_inverted":null,"expected_tx_p1":-2.181788478743033},{"code":"TC11_2W_PTCsym1","row":11,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"Two-winding transformer: PhaseTapChangerSymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[110.61574064907784,-0.8226907740403687]},"expected_inverted":null,"expected_tx_p1":168.6978632589983},{"code":"TC12_2W_PTClin1","row":12,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Two-winding transformer: PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[110.58600799118508,-4.906934710642317]},"expected_inverted":null,"expected_tx_p1":16.13677761872486},{"code":"TC13_3W_PTCasym1","row":13,"windings":3,"noload":false,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Three-winding transformer: PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.61157853759461,-4.168702436898519],"B3":[19.49043463777683,-5.415059433556105]},"expected_inverted":null,"expected_tx_p1":35.50175234587518},{"code":"TC14_2W_PTCasym1","row":14,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Two-winding transformer: PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.43874449862079,-4.517776475749479]},"expected_inverted":null,"expected_tx_p1":32.88455526643421},{"code":"TC15_2W_PTCasym1_RTC2","row":15,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Two-winding transformer: PhaseTapChangerAsymmetrical on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[105.83652499417047,-4.563029005236727]},"expected_inverted":null,"expected_tx_p1":34.12995297593228},{"code":"TC16_3W_RTC2","row":16,"windings":3,"noload":false,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Three-winding transformer: RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[108.23921276004185,-2.320253334239247],"B3":[20.31473775299373,-2.582392669356356]},"expected_inverted":null,"expected_tx_p1":103.35118554946202},{"code":"TC17_3W_PTCasym2","row":17,"windings":3,"noload":false,"taps":[{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Three-winding transformer: PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[112.90699472901773,-0.562595750533485],"B3":[19.871138354554944,-3.517265773471693]},"expected_inverted":null,"expected_tx_p1":169.1293189051882},{"code":"TC18_2W_RTC2","row":18,"windings":2,"noload":false,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Two-winding transformer: RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[108.06861504638788,-2.6541948844823233]},"expected_inverted":null,"expected_tx_p1":101.20959861373197},{"code":"TC19_2W_PTClin2","row":19,"windings":2,"noload":false,"taps":[{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Two-winding transformer: PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[110.5860079911851,-0.4069347106423165]},"expected_inverted":{"B1":[225.0,0.0],"B2":[110.58600799118506,-4.906934710642318]},"expected_tx_p1":184.28999367520913},{"code":"TC20_2W_PTCasym2","row":20,"windings":2,"noload":false,"taps":[{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Two-winding transformer: PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[112.71935155791185,-0.9000070084004362]},"expected_inverted":null,"expected_tx_p1":166.22134994999337},{"code":"TC21_2W_PTCtab2","row":21,"windings":2,"noload":false,"taps":[{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Two-winding transformer: PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[111.08953593508552,0.07724301672466749]},"expected_inverted":{"B1":[225.0,0.0],"B2":[109.98963953968858,-5.4227569832753355]},"expected_tx_p1":202.72948613621327},{"code":"TC22_2W_PTCsym2","row":22,"windings":2,"noload":false,"taps":[{"end":2,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"Two-winding transformer: PhaseTapChangerSymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[110.61574064907776,-4.488369785924476]},"expected_inverted":null,"expected_tx_p1":31.67228857974578},{"code":"TC23_3W_PTCtab2","row":23,"windings":3,"noload":false,"taps":[{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Three-winding transformer: PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[111.27685186495675,0.41298268912626707],"B3":[20.0078880720568,-3.9782430716578348]},"expected_inverted":{"B1":[225.0,0.0],"B2":[110.1557398328212,-5.084663350782535],"B3":[20.127432897019677,-1.237669995072254]},"expected_tx_p1":205.4454136514062},{"code":"TC24_2W_RTC1_PTClin1","row":24,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[108.51493189099581,-4.966121153552349]},"expected_inverted":null,"expected_tx_p1":16.440201264761065},{"code":"TC25_2W_RTC2_PTClin2","row":25,"windings":2,"noload":false,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Two-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[107.98235755578037,-0.35654958554880084]},"expected_inverted":{"B1":[225.0,0.0],"B2":[107.98235755578041,-4.960183397568129]},"expected_tx_p1":185.28396723393305},{"code":"TC26_2W_RTC1_PTCsym1","row":26,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerSymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.54414247793001,-0.9570003950030662]},"expected_inverted":null,"expected_tx_p1":163.3839920334166},{"code":"TC27_2W_RTC1_PTCasym1","row":27,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[106.44407932357626,-4.587405326973433]},"expected_inverted":null,"expected_tx_p1":32.57356474375808},{"code":"TC28_2W_RTC1_PTCtab1","row":28,"windings":2,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"Two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[107.92515478585963,-5.472907136057337]},"expected_inverted":null,"expected_tx_p1":-1.2041549860747613},{"code":"TC29_3W_RTC1_PTClin1","row":29,"windings":3,"noload":false,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Three-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[108.68611462334503,-4.617104841844859],"B3":[19.517040279147157,-6.093514027422237]},"expected_inverted":null,"expected_tx_p1":19.034299568497946},{"code":"TC30_3W_RTC2_PTClin2","row":30,"windings":3,"noload":false,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"Three-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[108.1605158945926,-0.02333957255101972],"B3":[20.295252273416345,-3.6899069229196413]},"expected_inverted":{"B1":[225.0,0.0],"B2":[108.14589872566717,-4.624291528563975],"B3":[20.30999895913929,-1.4809578246096222]},"expected_tx_p1":187.52437677326165},{"code":"TC31_2W_PTClin1_RTC2","row":31,"windings":2,"noload":false,"taps":[{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"Two-winding transformer: PhaseTapChangerLinear on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[107.98235755578041,-4.960183397568129]},"expected_inverted":null,"expected_tx_p1":17.31052337436133},{"code":"TC32_2W_RTC2_PTCasym2","row":32,"windings":2,"noload":false,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"Two-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[110.2145698104779,-0.8577828818969521]},"expected_inverted":null,"expected_tx_p1":167.30411216042256},{"code":"NL01_3W_RTC1_PTCtab2","row":1,"windings":3,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, three-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[109.51198627257732,5.498704171766051],"B3":[19.71412894195811,-0.0012958282339625865]},"expected_inverted":{"B1":[225.0,0.0],"B2":[107.35416750571255,-5.501295828233941],"B3":[19.714128941958116,-0.0012958282339615218]},"expected_tx_p1":0.09716208431900923},{"code":"NL02_3W_RTC1","row":2,"windings":3,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25}],"title":"No load, three-winding transformer: RatioTapChanger on end 1","expected":{"B1":[225.0,0.0],"B2":[108.42770918076974,-0.0012958282339616612],"B3":[19.714128941958133,-0.001295828233961496]},"expected_inverted":null,"expected_tx_p1":0.09716208431879349},{"code":"NL03_3W_RTC1_RTC2","row":3,"windings":3,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, three-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[103.54846226763497,-0.00129582823396183],"B3":[19.714128941958105,-0.0012958282339616874]},"expected_inverted":null,"expected_tx_p1":0.09716208431895246},{"code":"NL04_3W_RTC1_RTC2_RTC3","row":4,"windings":3,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":3,"type":"RTC","low":1,"high":5,"neutral":3,"step":5,"svi":2.5}],"title":"No load, three-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2 + RatioTapChanger on end 3","expected":{"B1":[225.0,0.0],"B2":[103.54846226763493,-0.0012958282339611655],"B3":[20.699835389056005,-0.001295828233960581]},"expected_inverted":null,"expected_tx_p1":0.09716208431895246},{"code":"NL05_2W_RTC1_RTC2","row":5,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[103.54846226763247,-0.001295828234553541]},"expected_inverted":null,"expected_tx_p1":0.09716730195395265},{"code":"NL06_2W_RTC1_PTCasym2","row":6,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[112.71398060009224,3.5809881265118295]},"expected_inverted":null,"expected_tx_p1":0.09716730195392426},{"code":"NL07_2W_RTC1","row":7,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25}],"title":"No load, two-winding transformer: RatioTapChanger on end 1","expected":{"B1":[225.0,0.0],"B2":[108.42770918076717,-0.0012958282345534292]},"expected_inverted":null,"expected_tx_p1":0.09716730195385613},{"code":"NL08_2W_RTC1_PTClin2","row":8,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[108.42770918076698,4.498704171765447]},"expected_inverted":{"B1":[225.0,0.0],"B2":[108.42770918076697,-4.501295828234555]},"expected_tx_p1":0.09716730195392426},{"code":"NL09_3W_PTCtab1","row":9,"windings":3,"noload":true,"taps":[{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, three-winding transformer: PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[111.3799487871767,-5.501295828233962],"B3":[20.250899779486673,-5.501295828233961]},"expected_inverted":null,"expected_tx_p1":0.1025251199136394},{"code":"NL10_2W_PTCtab1","row":10,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, two-winding transformer: PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[111.37994878717404,-5.501295828234554]},"expected_inverted":null,"expected_tx_p1":0.10253062554544212},{"code":"NL11_2W_PTCsym1","row":11,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"No load, two-winding transformer: PhaseTapChangerSymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[112.49374827504576,3.6643831836495657]},"expected_inverted":null,"expected_tx_p1":0.10459149111882977},{"code":"NL12_2W_PTClin1","row":12,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, two-winding transformer: PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[112.49374827504579,-4.5012958282345545]},"expected_inverted":null,"expected_tx_p1":0.10459149111888655},{"code":"NL13_3W_PTCasym1","row":13,"windings":3,"noload":true,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, three-winding transformer: PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.21585181964002,-3.583579782980342],"B3":[19.675609421752732,-3.583579782980342]},"expected_inverted":null,"expected_tx_p1":0.09678276444080844},{"code":"NL14_2W_PTCasym1","row":14,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, two-winding transformer: PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.21585181963742,-3.583579782980935]},"expected_inverted":null,"expected_tx_p1":0.09678796170626167},{"code":"NL15_2W_PTCasym1_RTC2","row":15,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, two-winding transformer: PhaseTapChangerAsymmetrical on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[103.34613848775373,-3.583579782980936]},"expected_inverted":null,"expected_tx_p1":0.09678796170628438},{"code":"NL16_3W_RTC2","row":16,"windings":3,"noload":true,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, three-winding transformer: RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[107.43152960267126,-0.001295828233961153],"B3":[20.45340877728153,-0.001295828233961208]},"expected_inverted":null,"expected_tx_p1":0.10458587482392338},{"code":"NL17_3W_PTCasym2","row":17,"windings":3,"noload":true,"taps":[{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, three-winding transformer: PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[116.94075487259848,3.580988126512421],"B3":[20.453408777281528,-0.0012958282339613023]},"expected_inverted":null,"expected_tx_p1":0.1045858748239915},{"code":"NL18_2W_RTC2","row":18,"windings":2,"noload":true,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, two-winding transformer: RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[107.43152960266873,-0.0012958282345535501]},"expected_inverted":null,"expected_tx_p1":0.10459149111886384},{"code":"NL19_2W_PTClin2","row":19,"windings":2,"noload":true,"taps":[{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, two-winding transformer: PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[112.49374827504575,4.4987041717654455]},"expected_inverted":{"B1":[225.0,0.0],"B2":[112.49374827504575,-4.501295828234555]},"expected_tx_p1":0.10459149111890927},{"code":"NL20_2W_PTCasym2","row":20,"windings":2,"noload":true,"taps":[{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, two-winding transformer: PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[116.94075487259572,3.5809881265118304]},"expected_inverted":null,"expected_tx_p1":0.10459149111880707},{"code":"NL21_2W_PTCtab2","row":21,"windings":2,"noload":true,"taps":[{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, two-winding transformer: PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[113.61868575779627,5.498704171765446]},"expected_inverted":{"B1":[225.0,0.0],"B2":[111.37994878717406,-5.501295828234552]},"expected_tx_p1":0.10459149111886384},{"code":"NL22_2W_PTCsym2","row":22,"windings":2,"noload":true,"taps":[{"end":2,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"No load, two-winding transformer: PhaseTapChangerSymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[112.49374827504582,-3.6669748401186713]},"expected_inverted":null,"expected_tx_p1":0.10459149111881844},{"code":"NL23_3W_PTCtab2","row":23,"windings":3,"noload":true,"taps":[{"end":2,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, three-winding transformer: PhaseTapChangerTabular on end 2","expected":{"B1":[225.0,0.0],"B2":[113.61868575779889,5.498704171766036],"B3":[20.45340877728153,-0.0012958282339626407]},"expected_inverted":{"B1":[225.0,0.0],"B2":[111.37994878717667,-5.5012958282339595],"B3":[20.45340877728153,-0.0012958282339611724]},"expected_tx_p1":0.10458587482403692},{"code":"NL24_2W_RTC1_PTClin1","row":24,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[108.42770918076698,-4.501295828234554]},"expected_inverted":null,"expected_tx_p1":0.09716730195393562},{"code":"NL25_2W_RTC2_PTClin2","row":25,"windings":2,"noload":true,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, two-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[107.4315296026687,4.498704171765446]},"expected_inverted":{"B1":[225.0,0.0],"B2":[107.43152960266868,-4.501295828234555]},"expected_tx_p1":0.10459149111890927},{"code":"NL26_2W_RTC1_PTCsym1","row":26,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCsym","low":1,"high":25,"neutral":13,"step":9,"vsi":1.6}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerSymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[108.42770918076705,3.6643831836495635]},"expected_inverted":null,"expected_tx_p1":0.09716730195396968},{"code":"NL27_2W_RTC1_PTCasym1","row":27,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerAsymmetrical on end 1","expected":{"B1":[225.0,0.0],"B2":[104.30443548880716,-3.583579782980937]},"expected_inverted":null,"expected_tx_p1":0.08991768833218225},{"code":"NL28_2W_RTC1_PTCtab1","row":28,"windings":2,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTCtab","low":1,"high":13,"neutral":7,"step":9,"table":[{"step":1,"angle":-24.0,"ratio":0.96},{"step":2,"angle":-18.5,"ratio":0.97},{"step":3,"angle":-13.5,"ratio":0.979},{"step":4,"angle":-9.0,"ratio":0.987},{"step":5,"angle":-5.5,"ratio":0.993},{"step":6,"angle":-2.5,"ratio":0.997},{"step":7,"angle":0.0,"ratio":1.0},{"step":8,"angle":2.5,"ratio":1.004},{"step":9,"angle":5.5,"ratio":1.01},{"step":10,"angle":9.0,"ratio":1.017},{"step":11,"angle":13.5,"ratio":1.025},{"step":12,"angle":18.5,"ratio":1.034},{"step":13,"angle":24.0,"ratio":1.044}]}],"title":"No load, two-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerTabular on end 1","expected":{"B1":[225.0,0.0],"B2":[107.35416750570992,-5.501295828234552]},"expected_inverted":null,"expected_tx_p1":0.09525272223689109},{"code":"NL29_3W_RTC1_PTClin1","row":29,"windings":3,"noload":true,"taps":[{"end":1,"type":"RTC","low":1,"high":21,"neutral":11,"step":14,"svi":1.25},{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, three-winding transformer: RatioTapChanger on end 1 + PhaseTapChangerLinear on end 1","expected":{"B1":[225.0,0.0],"B2":[108.42770918076955,-4.501295828233963],"B3":[19.7141289419581,-4.501295828233963]},"expected_inverted":null,"expected_tx_p1":0.09716208431905464},{"code":"NL30_3W_RTC2_PTClin2","row":30,"windings":3,"noload":true,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5}],"title":"No load, three-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerLinear on end 2","expected":{"B1":[225.0,0.0],"B2":[107.43152960267128,4.498704171766056],"B3":[20.45340877728154,-0.001295828233961902]},"expected_inverted":{"B1":[225.0,0.0],"B2":[107.43152960267132,-4.501295828233977],"B3":[20.453408777281542,-0.0012958282339609567]},"expected_tx_p1":0.10458587482396879},{"code":"NL31_2W_PTClin1_RTC2","row":31,"windings":2,"noload":true,"taps":[{"end":1,"type":"PTClin","low":1,"high":25,"neutral":13,"step":16,"deg":1.5},{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5}],"title":"No load, two-winding transformer: PhaseTapChangerLinear on end 1 + RatioTapChanger on end 2","expected":{"B1":[225.0,0.0],"B2":[107.43152960266872,-4.501295828234554]},"expected_inverted":null,"expected_tx_p1":0.10459149111888655},{"code":"NL32_2W_RTC2_PTCasym2","row":32,"windings":2,"noload":true,"taps":[{"end":2,"type":"RTC","low":1,"high":17,"neutral":9,"step":6,"svi":1.5},{"end":2,"type":"PTCasym","low":1,"high":25,"neutral":13,"step":18,"vsi":1.5,"theta":60.0}],"title":"No load, two-winding transformer: RatioTapChanger on end 2 + PhaseTapChangerAsymmetrical on end 2","expected":{"B1":[225.0,0.0],"B2":[111.67842090332897,3.580988126511827]},"expected_inverted":null,"expected_tx_p1":0.10459149111890927}];
 
@@ -1638,6 +2138,110 @@ $("angles").addEventListener("change", (ev) => { showAngles = ev.target.checked;
 $("rule").addEventListener("change", (ev) => { model.end2Rule = ev.target.value; run(); });
 $("preset").addEventListener("change", (ev) => { openPreset(ev.target.value); });
 if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("hashchange", () => openPreset(decodeURIComponent(location.hash.slice(1))));
+
+// ---------------------------------------------------------------- scenario list
+let scenarios = [];             // generated and added scenarios (see scenarios.mjs)
+const picked = new Set();       // ids of the selected rows
+let customCount = 0;
+const visible = () => { const q = $("g-filter").value.trim().toLowerCase(); return scenarios.filter((s) => !q || s.id.toLowerCase().includes(q)); };
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+function renderScenarios() {
+  $("g-list").hidden = !scenarios.length;
+  const shown = visible();
+  $("g-body").innerHTML = shown.map((s) => `<tr class="${s.summary && !s.summary.ok ? "bad" : ""}"><td><input type="checkbox" data-id="${esc(s.id)}"${picked.has(s.id) ? " checked" : ""} aria-label="select ${esc(s.id)}"></td>`
+    + `<td>${esc(s.id)}</td><td>${esc(s.kind || "")}</td><td>${esc(stepsText(s))}</td><td>${s.model.tp.on && !s.model.noLoad ? "on" : "off"}</td><td>${esc(describeBuses(s))}</td>`
+    + `<td><button type="button" data-open="${esc(s.id)}">Open</button> <button type="button" data-del="${esc(s.id)}">Remove</button></td></tr>`).join("");
+  const n = picked.size, bad = scenarios.filter((s) => s.summary && !s.summary.ok).length;
+  $("g-status").textContent = scenarios.length ? `${scenarios.length} scenarios (${shown.length} shown), ${n} selected${bad ? `, ${bad} without a solution (not exported)` : ""}.` : "The list is empty.";
+  $("g-exp-sel").textContent = `Export selected (${n})`;
+  $("g-exp-sel").disabled = !n;
+}
+/** Numbers from a comma-separated text, or null when something is not a number. */
+const numbers = (t) => { const a = t.split(/[,; ]+/).filter(Boolean).map(Number); return a.length && a.every(Number.isFinite) ? a : null; };
+$("g-run").addEventListener("click", async () => {
+  const offsets = numbers($("g-offsets").value), loads = numbers($("g-loads").value) || [], pf = +$("g-pf").value;
+  if (!offsets || offsets.some((k) => !Number.isInteger(k) || Math.abs(k) > 12)) { $("g-status").textContent = "Tap offsets must be whole numbers from −12 to 12, e.g. −12, 0, 12."; return; }
+  if (loads.some((x) => x <= 0 || x > 200) || !(pf >= 0.5 && pf <= 1)) { $("g-status").textContent = "Loads must be 1–200 % and cos φ 0.5–1."; return; }
+  const kept = scenarios.filter((s) => s.group === "custom");
+  const made = generateScenarios(presets, { ...DEFAULT_OPTIONS, offsets, loads, powerFactor: pf, openCircuit: $("g-oc").checked, parallelTp: $("g-tp").checked });
+  $("g-run").disabled = true;
+  for (const [i, s] of made.entries()) {
+    evaluate(s);
+    if (i % 25 === 24) { $("g-status").textContent = `Solving ${i + 1} / ${made.length} ...`; await new Promise((r) => setTimeout(r)); }
+  }
+  $("g-run").disabled = false;
+  scenarios = [...made, ...kept];
+  picked.clear();
+  renderScenarios();
+});
+$("g-add").addEventListener("click", () => {
+  const m = structuredClone(model);
+  const s = makeScenario(m, { id: `custom${++customCount}_${($("preset").value || "edited").slice(0, 24)}`, group: "custom", combo: $("preset").value, kind: m.noLoad ? "open circuit" : "custom load" });
+  evaluate(s);
+  if (!s.summary.ok) { customCount--; $("g-status").textContent = "The current state has no load-flow solution; it was not added."; return; }
+  scenarios.push(s); picked.add(s.id);
+  renderScenarios();
+});
+$("g-clear").addEventListener("click", () => { scenarios = []; picked.clear(); renderScenarios(); });
+$("g-filter").addEventListener("input", renderScenarios);
+$("g-all").addEventListener("click", () => { visible().forEach((s) => picked.add(s.id)); renderScenarios(); });
+$("g-none").addEventListener("click", () => { picked.clear(); renderScenarios(); });
+$("g-body").addEventListener("click", (ev) => {
+  const t = ev.target;
+  if (t.dataset.id !== undefined && t.tagName === "INPUT") { t.checked ? picked.add(t.dataset.id) : picked.delete(t.dataset.id); renderScenarios(); }
+  else if (t.dataset.open !== undefined) {
+    const s = scenarios.find((x) => x.id === t.dataset.open);
+    if (s) { $("preset").value = ""; setModel(structuredClone(s.model)); window.scrollTo?.(0, 0); }
+  } else if (t.dataset.del !== undefined) { scenarios = scenarios.filter((x) => x.id !== t.dataset.del); picked.delete(t.dataset.del); renderScenarios(); }
+});
+async function exportList(list) {
+  if (!list.length) return;
+  const v = $("g-version").value, versions = v === "both" ? ["3.0.0", "2.4.15"] : [v];
+  $("g-status").textContent = `Exporting ${list.length} scenarios ...`;
+  try {
+    const out = await exportScenarios(list, { versions, onProgress: (i, n) => { $("g-status").textContent = `Exporting ${i} / ${n} ...`; } });
+    const url = URL.createObjectURL(new Blob([out.bytes], { type: "application/zip" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = out.filename; link.hidden = true;
+    document.body.appendChild(link);
+    try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    renderScenarios();
+    $("g-status").textContent = `Exported ${out.filename}: ${out.exported} scenarios${out.skipped.length ? `, ${out.skipped.length} without a solution left out` : ""}.`;
+  } catch (err) { $("g-status").textContent = "Export failed: " + err.message; }
+}
+$("g-exp-sel").addEventListener("click", () => exportList(scenarios.filter((s) => picked.has(s.id))));
+$("g-exp-all").addEventListener("click", () => exportList(scenarios));
+renderScenarios();
+
+// ---------------------------------------------------------------- import
+$("import-cgmes").addEventListener("change", async (ev) => {
+  const input = ev.target, files = [...(input.files || [])];
+  if (!files.length) return;
+  const status = $("import-status");
+  status.textContent = "Reading ...";
+  try {
+    const { cases, errors } = await importFiles(await Promise.all(files.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) }))));
+    const lines = errors.map((e) => `${e.name} not imported: ${e.problems.join(" ")}`);
+    if (cases.length === 1 && !errors.length) {
+      const c = cases[0];
+      $("preset").value = "";
+      setModel(c.model);
+      lines.push(`Imported ${c.name} (CGMES ${c.version}), ${c.model.windings}-winding, ${c.model.taps.length} tap changer(s)${c.svDeviation === null ? "" : `; its SV matches the load flow to ${c.svDeviation.toExponential(1)} pu`}.`);
+    } else if (cases.length) {
+      for (const c of cases) {
+        let id = "imp_" + c.name.replace(/[^\w.-]+/g, "_").slice(0, 60), k = 1;
+        while (scenarios.some((s) => s.id === id + (k > 1 ? "_" + k : ""))) k++;
+        const s = makeScenario(c.model, { id: id + (k > 1 ? "_" + k : ""), group: "custom", kind: "imported" });
+        evaluate(s); scenarios.push(s);
+      }
+      renderScenarios();
+      lines.push(`Added ${cases.length} imported scenarios to the scenario list.`);
+    }
+    for (const c of cases) lines.push(...c.warnings.map((w) => `${c.name}: ${w}`));
+    status.textContent = lines.join(" ") || "Nothing imported.";
+  } catch (err) { status.textContent = "Import failed: " + err.message; }
+  input.value = "";
+});
 
 // Start-up: load the presets, fill the selector, open the case named in the URL (#CODE) or TC08 by default.
 // If presets.json cannot be loaded (e.g. the page was opened from disk), start with a custom model.
