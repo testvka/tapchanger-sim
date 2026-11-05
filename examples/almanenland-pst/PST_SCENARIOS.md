@@ -3,7 +3,8 @@
 How the phase-shifting transformers (PSTs) of Almanenland and its neighbours are used, in six operating scenarios.
 Every number below comes from an **AC load flow** of the GridLab Almanenland model. There are 181 load flows in all
 (sparse-python core, OLTC voltage control on, as in the day stamps). The interactive page
-[`simulator/index.html`](simulator/index.html) shows every case on a map and lets you move the steps yourself.
+[`simulator/index.html`](simulator/index.html) shows every case as a schematic of the flows between the areas and on a
+map of the 380 kV grid, and lets you move the steps yourself.
 
 All grids and names are synthetic. None of them describes a real network.
 
