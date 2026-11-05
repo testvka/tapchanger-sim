@@ -22,3 +22,15 @@ ENTSO-E CGMES 3.0 SHACL rules with 0 violations.
 
 `python3 check_examples.py` (standard library only) checks that the SV in each zip is the same as the separate SV
 file and that the bus voltages of the SV and of the inverted SV equal the expected values in `../presets.json`.
+
+## Almanenland PST scenarios
+
+[`almanenland-pst/`](almanenland-pst/) takes the phase tap changers from one transformer to a whole grid: the 18
+phase-shifting transformers of the synthetic 380 kV system Almanenland and its neighbours Westonia, Slavania and
+Sudlandia, in six operating scenarios, for example a storm in the north whose transit to the south Slavania blocks
+with its PSTs. Every number comes from an AC load flow of the GridLab model (181 load flows).
+
+- [`PST_SCENARIOS.md`](almanenland-pst/PST_SCENARIOS.md): the scenarios in detail, with tables and lessons;
+- [`simulator/index.html`](almanenland-pst/simulator/index.html): an interactive page in the style of this simulator: map,
+  PST steps, the phasor of each PST from its real tap table, a two-path model and the Slavania sweep. It opens
+  straight from the file system.
