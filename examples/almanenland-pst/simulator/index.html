@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PST Simulator · Almanenland</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Libre+Franklin:wght@400;500;600&family=Saira+Semi+Condensed:wght@500;600;700&display=swap">
+<style>
+/* the look of the Tap Changer Simulator (cgmes30-tap-configurations/simulator), plus the chart roles */
+:root{--bg:#f4f6f8;--surface:#fff;--ink:#16202b;--muted:#566472;--line:#d3dae2;--soft:#e9edf2;--rt:#0b7480;--ph:#a95500;
+--ok:#2c7a34;--bad:#b0291f;--okbg:#e5f2e6;--badbg:#f8e5e3;
+--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100;
+--l0:#b9c3cd;--l1:#86b6ef;--l2:#2a78d6;--l3:#104281;--crit:#d03b3b;--warn:#fab219;
+--z-Almanenland:#2a78d6;--z-Westonia:#eb6834;--z-Slavania:#1baf7a;--z-Sudlandia:#eda100;
+--display:"Saira Semi Condensed","Arial Narrow",sans-serif;--body:"Libre Franklin","Segoe UI",Helvetica,Arial,sans-serif;
+--mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#0e141a;--surface:#151e27;--ink:#e3e9ef;
+--muted:#94a3b1;--line:#2b3846;--soft:#1c2733;--rt:#4fbac4;--ph:#f0a24e;--ok:#72c27a;--bad:#f2786d;--okbg:#17301b;--badbg:#3a1c19;
+--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--l0:#3a4856;--l1:#5598e7;--l2:#86b6ef;--l3:#cde2fb;
+--z-Almanenland:#3987e5;--z-Westonia:#d95926;--z-Slavania:#199e70;--z-Sudlandia:#c98500}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#0e141a;--surface:#151e27;--ink:#e3e9ef;--muted:#94a3b1;--line:#2b3846;
+--soft:#1c2733;--rt:#4fbac4;--ph:#f0a24e;--ok:#72c27a;--bad:#f2786d;--okbg:#17301b;--badbg:#3a1c19;
+--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--l0:#3a4856;--l1:#5598e7;--l2:#86b6ef;--l3:#cde2fb;
+--z-Almanenland:#3987e5;--z-Westonia:#d95926;--z-Slavania:#199e70;--z-Sudlandia:#c98500}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--body);padding-inline:16px;padding-block:20px 48px;margin:0}
+.wrap{max-width:1320px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+h1,h2,h3{font-family:var(--display);margin:0;line-height:1.15}
+h1{font-size:2rem;font-weight:700} h2{font-size:1.15rem;font-weight:600} h3{font-size:1rem;font-weight:600}
+p{margin:0;max-width:80ch}
+.lay{display:grid;grid-template-columns:minmax(300px,390px) minmax(0,1fr);gap:18px;align-items:start}
+@media (max-width:900px){.lay{grid-template-columns:1fr}}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.ctrl{display:flex;flex-direction:column;gap:12px}
+label{display:flex;flex-direction:column;gap:3px;font-size:.8rem;color:var(--muted)}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px}
+input[type=number],select{font:500 .86rem var(--mono);color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:5px 6px;min-width:0}
+input[type=range]{width:100%;accent-color:var(--ph)}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.seg button,.btn{font:600 .84rem var(--body);color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:4px 12px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--rt);outline-offset:2px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.end{border-left:3px solid var(--line);padding-left:10px;display:flex;flex-direction:column;gap:6px}
+.end.ph{border-color:var(--ph)} .end.rt{border-color:var(--rt)}
+.readout{font:500 .8rem var(--mono);background:var(--soft);border-radius:4px;padding:5px 8px;overflow-x:auto;white-space:pre-wrap}
+table{border-collapse:collapse;width:100%;font-size:.84rem}
+th{text-align:left;font-weight:600;color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line);padding:4px 8px 4px 0}
+td{border-bottom:1px solid var(--soft);padding:4px 8px 4px 0;font-family:var(--mono);font-size:.8rem;font-variant-numeric:tabular-nums}
+td:first-child{font-family:var(--body)} td.n,th.n{text-align:right}
+tr.sel td{background:var(--soft)}
+.res{display:flex;flex-direction:column;gap:14px;min-width:0}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.status{font:500 .84rem var(--mono)} .status.ok{color:var(--ok)} .status.est{color:var(--ph)} .status.bad{color:var(--bad)}
+.scroll{overflow-x:auto}
+svg{width:100%;height:auto;display:block;background:var(--bg);border-radius:4px}
+svg text{font-family:var(--mono);font-size:10.5px;fill:var(--ink)}
+svg .lb{fill:var(--muted)} svg .nm{font-family:var(--display);font-size:15px;font-weight:700}
+svg .zn{font-family:var(--display);font-size:22px;font-weight:700;opacity:.9}
+svg .axis{stroke:var(--muted);stroke-width:1;stroke-dasharray:4 4} svg .grid{stroke:var(--line);stroke-width:1}
+svg .ray{stroke:var(--muted);stroke-width:.8}
+svg .mk-ink{fill:var(--ink)} svg .mk-ph{fill:var(--ph)} svg .mk-rt{fill:var(--rt)} svg .mk-mu{fill:var(--muted)}
+svg .halo{paint-order:stroke;stroke:var(--bg);stroke-width:3px;stroke-linejoin:round}
+.hint{font-size:.8rem;color:var(--muted)}
+[hidden]{display:none!important}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:.8rem;color:var(--muted);align-items:center}
+.legend i{display:inline-block;width:22px;height:4px;border-radius:2px;vertical-align:middle;margin-right:5px}
+.legend b{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:5px}
+.badge{font:600 .72rem var(--body);border-radius:999px;padding:1px 8px;border:1px solid var(--line);color:var(--muted)}
+.badge.ac{color:var(--ok);border-color:var(--ok)} .badge.est{color:var(--ph);border-color:var(--ph)}
+#tip{position:fixed;pointer-events:none;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:4px;
+padding:6px 8px;font:500 .78rem var(--mono);box-shadow:0 2px 8px rgba(0,0,0,.15);display:none;z-index:9;max-width:340px;white-space:pre-line}
+details summary{cursor:pointer;color:var(--muted);font-size:.82rem}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.kpi{background:var(--soft);border-radius:4px;padding:6px 10px}
+.kpi .v{font:600 1.25rem var(--display)} .kpi .k{font-size:.74rem;color:var(--muted)} .kpi .d{font:500 .74rem var(--mono);color:var(--muted)}
+</style>
+<body>
+<div class="wrap">
+  <header style="display:flex;flex-direction:column;gap:6px">
+    <h1>PST Simulator · Almanenland</h1>
+    <p>How phase-shifting transformers (PSTs) steer the flows in the imaginary 380 kV system Almanenland and its
+      neighbours Westonia, Slavania and Sudlandia. Pick a scenario and an AC case, then move the steps of any of the
+      18 PSTs and watch the tie flows, the north–south flow and the line loadings. Every case in the case list is a
+      full AC load flow of the GridLab model (2,742 nodes); a step you move yourself is estimated from AC
+      sensitivities of the same model. Scenario write-up: <a href="../PST_SCENARIOS.md">PST_SCENARIOS.md</a>.</p>
+  </header>
+  <div class="lay">
+    <div class="ctrl">
+      <section class="panel">
+        <h2>Scenario</h2>
+        <label>Scenario<select id="scen"></select></label>
+        <p class="hint" id="scdesc"></p>
+        <label>AC case (full AC load flow)<select id="case"></select></label>
+        <p class="hint" id="casehint"></p>
+      </section>
+      <section class="panel">
+        <h2>Phase shifter</h2>
+        <label>PST<select id="pst"></select></label>
+        <div class="end ph" id="pstbox"></div>
+        <div class="seg">
+          <button type="button" class="btn" id="bNeutral">Neutral</button>
+          <button type="button" class="btn" id="bBlock">Block (end stop)</button>
+          <button type="button" class="btn" id="bCase">Step of the case</button>
+        </div>
+        <div class="seg">
+          <button type="button" class="btn" id="bSlav0">Slavania neutral</button>
+          <button type="button" class="btn" id="bSlavB">Slavania blocks</button>
+          <button type="button" class="btn" id="bReset">Reset all steps</button>
+        </div>
+        <p class="hint" id="pstnote"></p>
+      </section>
+      <section class="panel">
+        <h2>Two-path model</h2>
+        <p class="hint">The principle in one picture: a transfer T from north to south splits between the internal
+          path A and a path B through a neighbour with the selected PST in it. Exact AC for two lossless paths at
+          380 kV: P = U·U'·sin(δ)/X. The PST adds its angle α (and its ratio) to path B only.</p>
+        <div class="row">
+          <label>Transfer T MW<input type="number" id="mT" value="3000" step="100"></label>
+          <label>X path A Ω<input type="number" id="mXA" value="40" step="1"></label>
+          <label>X path B Ω<input type="number" id="mXB" value="60" step="1"></label>
+        </div>
+      </section>
+    </div>
+    <div class="res">
+      <section class="panel">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span id="badge" class="badge"></span><span id="status" class="status"></span></div>
+        <div class="kpis" id="kpis"></div>
+        <div id="map"></div>
+        <div class="legend" id="maplegend"></div>
+      </section>
+      <section class="panel">
+        <h2>Border flows</h2>
+        <div class="two"><div class="scroll" id="tborder"></div><div class="scroll" id="tworst"></div></div>
+        <details><summary>All 28 tie lines</summary><div class="scroll" id="tties"></div></details>
+      </section>
+      <div class="two">
+        <section class="panel"><h2>What the selected PST does to the voltage</h2><div id="phasor"></div><div id="phtxt" class="readout"></div></section>
+        <section class="panel"><h2>Two paths, one PST</h2><div id="model"></div><div id="modeltxt" class="readout"></div></section>
+      </div>
+      <section class="panel" id="sweeppanel">
+        <h2 id="sweeptitle">Slavania blocks step by step</h2>
+        <p class="hint" id="sweephint"></p>
+        <div id="sweep"></div>
+        <div class="legend" id="sweeplegend"></div>
+        <details><summary>Table view</summary><div class="scroll" id="tsweep"></div></details>
+      </section>
+    </div>
+  </div>
+</div>
+<div id="tip" role="tooltip"></div>
+<script src="pst_data.js"></script>
+<script src="pst.js"></script>
+</body>
+</html>
