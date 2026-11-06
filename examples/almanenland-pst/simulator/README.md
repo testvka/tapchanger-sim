@@ -6,6 +6,10 @@ phase-shifting transformers of Almanenland. It has the look and layout of the Ta
 
 - **Scenario and AC case:** the six scenarios of [`../PST_SCENARIOS.md`](../PST_SCENARIOS.md), each with its AC load flows
   (as operated, every PST on neutral, Slavania blocks, tie outage, large-angle sweeps, ...).
+- **Power flows between the areas:** a schematic in geographical order (Westonia west, Slavania east, Sudlandia south,
+  Almanenland split into North and South at the cut). Arrow width = MW, arrowhead = direction, each arrow labelled with
+  its MW and the change against "as operated"; every box says how much its area sends out or takes in. Hover an arrow
+  for its tie lines.
 - **Map:** the 380 kV grid of the four countries, line loading or the change against "as operated", tie flow
   arrows, the north → south cut and the 18 PSTs (hover for numbers, click a PST to select it).
 - **Phase shifter:** move the step of any PST. A step that matches an AC case shows that case ("AC load flow").

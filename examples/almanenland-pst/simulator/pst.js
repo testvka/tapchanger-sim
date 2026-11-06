@@ -238,6 +238,106 @@
     $("maplegend").querySelectorAll("[data-m]").forEach((b) => b.addEventListener("click", () => { st.mapMode = b.dataset.m; render(); }));
   }
 
+  // ------------------------------------------------------------ schematic area flows
+  // Almanenland is split at the cut: a tie belongs to North or South by the map y of its Almanenland station.
+  const AREA_BOX = {   // x, y, w, h in a 960 x 560 canvas, laid out like the map
+    W: { x: 30, y: 170, w: 210, h: 150, zone: "Westonia", name: "Westonia" },
+    AN: { x: 375, y: 40, w: 230, h: 130, zone: "Almanenland", name: "Almanenland North" },
+    AS: { x: 375, y: 270, w: 230, h: 130, zone: "Almanenland", name: "Almanenland South" },
+    SL: { x: 730, y: 120, w: 200, h: 170, zone: "Slavania", name: "Slavania" },
+    SU: { x: 375, y: 470, w: 555, h: 72, zone: "Sudlandia", name: "Sudlandia" },
+  };
+  // [from area, to area, start anchor (fraction of the box), end anchor]
+  const AREA_EDGES = [
+    ["AN", "W", [0, 0.55], [1, 0.25]], ["AS", "W", [0, 0.45], [1, 0.8]],
+    ["AN", "SL", [1, 0.4], [0, 0.3]], ["AS", "SL", [1, 0.35], [0, 0.85]],
+    ["AN", "AS", [0.5, 1], [0.5, 0]], ["AS", "SU", [0.3, 1], [0.084, 0]],
+    ["AN", "SU", [0.85, 1], [0.3, 0]], ["SL", "SU", [0.5, 1], [0.8, 0]], ["W", "SU", [0.6, 1], [0, 0.5]],
+  ];
+  const ZONE_AREA = { Westonia: "W", Slavania: "SL", Sudlandia: "SU" };
+  function areaOf(subIdx) {
+    const sb = D.subs[subIdx];
+    return sb[1] === "Almanenland" ? (sb[3] < D.cutY ? "AN" : "AS") : ZONE_AREA[sb[1]];
+  }
+  function areaFlows(s) {
+    const f = {}, ties = {};
+    for (const l of D.lines) {
+      if (!l[4]) continue;
+      const a = areaOf(l[1]), b = areaOf(l[2]), v = s.tie[l[0]];
+      const p = v && v[0] != null ? v[0] : 0;
+      const k = a + ">" + b;
+      f[k] = (f[k] || 0) + p;
+      (ties[k] = ties[k] || []).push([l[5], p]);
+    }
+    f["AN>AS"] = s.cut;
+    const get = (a, b) => (f[a + ">" + b] || 0) - (f[b + ">" + a] || 0);
+    const tl = (a, b) => (ties[a + ">" + b] || []).concat((ties[b + ">" + a] || []).map(([n, p]) => [n, -p]));
+    return { get, tl };
+  }
+
+  function arrowPath(x1, y1, x2, y2, w) {
+    const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, nx = -uy, ny = ux;
+    const hl = Math.min(L * 0.45, 12 + w * 0.9), hw = w / 2 + 7, sw = w / 2;
+    const bx = x2 - ux * hl, by = y2 - uy * hl;
+    const pt = (x, y) => x.toFixed(1) + "," + y.toFixed(1);
+    return `M${pt(x1 + nx * sw, y1 + ny * sw)} L${pt(bx + nx * sw, by + ny * sw)} L${pt(bx + nx * hw, by + ny * hw)} L${pt(x2, y2)} ` +
+      `L${pt(bx - nx * hw, by - ny * hw)} L${pt(bx - nx * sw, by - ny * sw)} L${pt(x1 - nx * sw, y1 - ny * sw)} z`;
+  }
+
+  function renderAreas(s, ref) {
+    const A = areaFlows(s), R = areaFlows(ref);
+    const W2 = 960, H2 = 560;
+    const at = (k, fr) => [AREA_BOX[k].x + fr[0] * AREA_BOX[k].w, AREA_BOX[k].y + fr[1] * AREA_BOX[k].h];
+    const o = [`<svg viewBox="0 0 ${W2} ${H2}" role="img" aria-label="Schematic power flows between Westonia, Almanenland North, Almanenland South, Slavania and Sudlandia">`];
+    // net position of each area = sum of its outflows on the drawn edges
+    const net = {};
+    for (const [a, b] of AREA_EDGES) { const v = A.get(a, b); net[a] = (net[a] || 0) + v; net[b] = (net[b] || 0) - v; }
+    for (const [k, bx] of Object.entries(AREA_BOX)) {
+      const n = net[k] || 0;
+      o.push(`<rect x="${bx.x}" y="${bx.y}" width="${bx.w}" height="${bx.h}" rx="10" fill="var(--z-${bx.zone})" fill-opacity=".13" stroke="var(--z-${bx.zone})" stroke-width="2"/>`);
+      const cy = bx.y + bx.h / 2;
+      o.push(`<text x="${bx.x + bx.w / 2}" y="${cy - 4}" text-anchor="middle" class="an">${bx.name}</text>`);
+      o.push(`<text x="${bx.x + bx.w / 2}" y="${cy + 16}" text-anchor="middle" class="anet">${Math.abs(n) < 50 ? "balanced" : (n > 0 ? "sends out " : "takes in ") + fmt(Math.abs(n) / 1000, 2) + " GW"}</text>`);
+    }
+    const labels = [];
+    for (const [a, b, fa, fb] of AREA_EDGES) {
+      const v = A.get(a, b), r = R.get(a, b);
+      if (Math.abs(v) < 1 && Math.abs(r) < 1) continue;
+      let [p1, p2] = [at(a, fa), at(b, fb)];
+      if (v < 0) [p1, p2] = [p2, p1];
+      const w = Math.max(2.5, Math.min(30, Math.abs(v) / 120));
+      const from = v >= 0 ? AREA_BOX[a].name : AREA_BOX[b].name, to = v >= 0 ? AREA_BOX[b].name : AREA_BOX[a].name;
+      const isCut = a === "AN" && b === "AS";
+      const tl = isCut ? [] : A.tl(a, b);
+      const tip = `${from} → ${to}: ${fmt(Math.abs(v))} MW\nas operated: ${fmt(Math.abs(r))} MW ${r * v < 0 ? "(other direction)" : ""}\n` +
+        (isCut ? "the north → south cut inside Almanenland (all lines crossing it)" :
+          tl.map(([nm, p]) => `  ${nm.replace(" (tie)", "")}: ${fmt(v >= 0 ? p : -p)} MW`).join("\n"));
+      const op = Math.abs(v) < 50 ? 0.45 : 1;
+      o.push(`<g data-tip="${esc(tip)}"><path d="${arrowPath(p1[0], p1[1], p2[0], p2[1], w)}" fill="var(--s1)" fill-opacity="${op}" stroke="var(--bg)" stroke-width="1.5"/></g>`);
+      const dx = p2[0] - p1[0], dy = p2[1] - p1[1], L = Math.hypot(dx, dy) || 1;
+      const d = Math.abs(v) - Math.abs(r);
+      const t1 = `${fmt(Math.abs(v))} MW`;
+      const t2 = `${Math.abs(d) < 0.5 ? "= as operated" : (d > 0 ? "▲ " : "▼ ") + fmt(Math.abs(d)) + " vs op."}${isCut ? " · north → south" : a === "SL" && b === "SU" ? " · transit" : ""}`;
+      const lw = Math.max(t1.length * 10, t2.length * 6.7), lh = 32;
+      // try both sides of the arrow; keep the one that hits no box and stays on the canvas
+      let best = null;
+      for (const [fr, sgn2] of [[0.5, 1], [0.5, -1], [0.38, 1], [0.38, -1], [0.62, 1], [0.62, -1]]) {
+        const mx = p1[0] + dx * fr, my = p1[1] + dy * fr;
+        const nx = (-dy / L) * sgn2, ny = (dx / L) * sgn2, off = w / 2 + 8;
+        const ax = mx + nx * off, ay = my + ny * off;
+        const x0 = nx > 0.35 ? ax : nx < -0.35 ? ax - lw : ax - lw / 2;
+        const y0 = ny > 0.35 ? ay : ny < -0.35 ? ay - lh : ay - lh / 2;
+        const hit = Object.values(AREA_BOX).reduce((n, bx) => n + (x0 < bx.x + bx.w && x0 + lw > bx.x && y0 < bx.y + bx.h && y0 + lh > bx.y ? 1 : 0), 0) +
+          (x0 < 4 || x0 + lw > W2 - 4 || y0 < 4 || y0 + lh > H2 - 4 ? 2 : 0);
+        if (!best || hit < best.hit) best = { hit, x0, y0 };
+      }
+      labels.push(`<text x="${best.x0.toFixed(0)}" y="${(best.y0 + 15).toFixed(0)}" class="amw halo">${t1}</text>` +
+        `<text x="${best.x0.toFixed(0)}" y="${(best.y0 + 29).toFixed(0)}" class="adl halo">${t2}</text>`);
+    }
+    o.push(...labels, "</svg>");
+    $("areas").innerHTML = o.join("");
+  }
+
   // ------------------------------------------------------------ tables + KPIs
   function renderTables(s, ref) {
     const rows = BORDERS.map(([a, b]) => {
@@ -442,6 +542,11 @@
     if (g) showTip(ev, g.dataset.tip); else hideTip();
   });
   $("map").addEventListener("mouseleave", hideTip);
+  $("areas").addEventListener("mousemove", (ev) => {
+    const g = ev.target.closest && ev.target.closest("[data-tip]");
+    if (g) showTip(ev, g.dataset.tip); else hideTip();
+  });
+  $("areas").addEventListener("mouseleave", hideTip);
 
   // ------------------------------------------------------------ render
   function render() {
@@ -465,6 +570,7 @@
     $("casehint").textContent = `${st.scen.cases.length + st.scen.sweep.length} AC cases in this scenario${st.scen.sens ? ", plus ±3-step sensitivity runs of every PST" : ""}.` +
       (baseCase().outages && baseCase().outages.length ? ` Out of service: ${baseCase().outages.map((x) => (lineById.get(x) || [])[5] || x).join(", ")}.` : "");
     $("pstnote").textContent = "Move a step: the map, the tables and the two pictures follow. Click a PST on the map to select it.";
+    renderAreas(s, ref);
     renderMap(s, ref);
     renderTables(s, ref);
     renderPhasor();

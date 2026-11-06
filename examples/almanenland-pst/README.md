@@ -7,7 +7,7 @@ the GridLab Almanenland model (181 load flows, all converged).
 | File | Content |
 |---|---|
 | [`PST_SCENARIOS.md`](PST_SCENARIOS.md) | The scenarios in detail: situation, PST settings, AC results, what they mean, lessons |
-| [`simulator/index.html`](simulator/index.html) | Interactive page: map, PST steps, phasor of each PST, two-path model, sweep chart. Open it in a browser (works from the file system) |
+| [`simulator/index.html`](simulator/index.html) | Interactive page: schematic power flows between the areas, 380 kV map, PST steps, phasor of each PST, two-path model, sweep chart. Open it in a browser (works from the file system) |
 | `tools/pst_scenarios.py` | Runs the AC load flows (inside a GridLab checkout) |
 | `tools/build_page_data.py` | Turns the results into `simulator/pst_data.js` |
 | `tools/gcp/` | `run.sh` + `startup.sh`: the same run on a GCP spot VM through a bucket |
